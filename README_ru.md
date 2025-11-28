@@ -33,7 +33,11 @@
 
 ```
 .
-├── computechain/    # Основной пакет (L1 Нода, Протокол, CLI)
+├── blockchain/      # L1 нода (консенсус, стейт, сеть)
+├── protocol/        # Определения протокола (типы, крипто, конфиг)
+├── cli/             # CLI кошелек (cpc-cli)
+├── miner/           # GPU воркер стек
+├── validator/       # PoC валидатор/оркестратор
 ├── scripts/         # Скрипты запуска Devnet и E2E тесты
 └── tests/           # Юнит-тесты
 ```
@@ -51,7 +55,7 @@ pip install -r requirements.txt
 **Запуск юнит-тестов:**
 
 ```bash
-pytest computechain/blockchain/tests
+pytest blockchain/tests
 ```
 
 **Запуск E2E сценария:**

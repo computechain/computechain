@@ -33,7 +33,11 @@ Full documentation, including architecture details, node setup, and API referenc
 
 ```
 .
-├── computechain/    # Core Python package (L1 Node, Protocol, CLI)
+├── blockchain/      # L1 node (consensus, state, networking)
+├── protocol/        # Protocol definitions (types, crypto, config)
+├── cli/             # CLI wallet (cpc-cli)
+├── miner/           # GPU worker stack
+├── validator/       # PoC validator/orchestrator
 ├── scripts/         # Devnet launchers & E2E tests
 └── tests/           # Unit tests
 ```
@@ -51,7 +55,7 @@ pip install -r requirements.txt
 **Run unit tests:**
 
 ```bash
-pytest computechain/blockchain/tests
+pytest blockchain/tests
 ```
 
 **Run End-to-End battle test:**
