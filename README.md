@@ -1,309 +1,119 @@
 # ComputeChain
 
-**ComputeChain** — экспериментальный блокчейн с архитектурой **Proof-of-Compute**, ориентированной на выполнение **полезных вычислений на GPU** (RTX 4090/5090 и далее).
+**ComputeChain** is an experimental Layer-1 blockchain built around a new consensus and incentive model called **Proof-of-Compute (PoC)** — focused on executing *useful* GPU computations (targeting RTX 4090/5090 and later).
 
-Текущая реализация находится на **Stage 4 (Proof-of-Compute Framework)**.
-Сеть поддерживает стабильный PoA-консенсус, **Post-Quantum (PQ)** архитектуру подписей и экономическую модель **Gas & Fees**.
-
-Включено:
-- **Consensus:** Multi-Validator PoA (Round-Robin) с PQ-подписями.
-- **Economics:** Gas Model (как в Ethereum) для защиты от спама.
-- **Staking:** Динамический набор валидаторов.
-- **PoC Core:** Структуры данных задач, транзакции результатов, валидация `compute_root`.
+The chain currently operates in **Stage 4: Proof-of-Compute Framework**, featuring a stable multi-validator PoA consensus, post-quantum-ready signing architecture, and a gas-based economic model.
 
 ---
 
-## 📚 Содержание
+## ✨ Key Features
 
-- [ComputeChain](#computechain)
-  - [📚 Содержание](#-содержание)
-  - [💡 Концепция](#-концепция)
-  - [🧩 Текущий функционал](#-текущий-функционал)
-    - [1. Consensus & Staking (PoA + PQ)](#1-consensus--staking-poa--pq)
-    - [2. Networking & Synchronization](#2-networking--synchronization)
-    - [3. Core Blockchain (Gas & Crypto)](#3-core-blockchain-gas--crypto)
-    - [4. Proof-of-Compute Core (New)](#4-proof-of-compute-core-new)
-  - [🚀 Быстрый старт (Devnet, 2 ноды)](#-быстрый-старт-devnet-2-ноды)
-    - [Требования](#требования)
-    - [Установка зависимостей](#установка-зависимостей)
-    - [Запуск локальной сети из двух валидаторов](#запуск-локальной-сети-из-двух-валидаторов)
-    - [Что вы увидите в логах](#что-вы-увидите-в-логах)
-  - [📖 Документация](#-документация)
-  - [🔧 CLI кошелёк (`cpc-cli`)](#-cli-кошелёк-cpc-cli)
-  - [🏗 Архитектура репозитория](#-архитектура-репозитория)
-  - [⚙️ Конфигурация (Devnet)](#️-конфигурация-devnet)
-  - [🧠 Логика консенсуса и разрешения форков](#-логика-консенсуса-и-разрешения-форков)
-  - [🔮 Roadmap & TZ](#-roadmap--tz)
-  - [🧪 Тестирование и разработка](#-тестирование-и-разработка)
-  - [📜 Лицензия](#-лицензия)
+### 🔐 **Consensus & Security**
 
----
+* **Multi-Validator PoA (Round-Robin)**
+* **Post-Quantum Signature Architecture** (Dilithium/Falcon-ready)
+* **Deterministic block production**
+* **Validator rotation every 10 blocks (epoch)**
 
-## 💡 Концепция
+### 💸 **Economics & State**
 
-Классический PoW тратит энергию на бесполезный поиск nonce.
-**ComputeChain** ставит цель:
+* **Ethereum-like Gas Model** for anti-spam protection
+* Account-based state (balance, nonce, stake)
+* Gas-metered transactions:
+  * Transfer
+  * Stake / Unstake
+  * Submit Compute Result
 
-> Заменить бессмысленный хешрейт на **полезные вычисления**, исполняемые на массовых GPU (начиная с RTX 4090/5090).
+### 🧠 **Proof-of-Compute Layer (PoC)**
 
-Идея:
+* Built-in types: `ComputeTask`, `ComputeResult`
+* Block header contains `compute_root` (Merkle root of compute results)
+* Reserved fields for **ZK-proofs** (future integration)
+* Foundation for GPU worker execution & verification
 
-- L1-цепочка обеспечивает **детерминированный консенсус**, стейт, стейкинг и безопасность.
-- **Post-Quantum Security:** Архитектура готова к переходу на квантово-устойчивые подписи (Dilithium, Falcon).
-- Отдельный слой (PoC-уровень) распределяет, исполняет и проверяет **compute-задачи**.
-- Вознаграждения в сети завязаны на корректное выполнение вычислений.
+### 🌐 **Networking**
 
-Подробное ТЗ на PoC-слой см. в файле [TZ_POC.md](TZ_POC.md).
+* Lightweight P2P protocol
+* Automatic sync mode and fork resolution
+* Peer persistence (`peers.json`)
 
 ---
 
-## 🧩 Текущий функционал
+## 🚀 Getting Started
 
-### 1. Consensus & Staking (PoA + PQ)
+Full developer and validator documentation is available in the `/docs` directory:
 
-- **Round-Robin Consensus:**
-  Валидаторы производят блоки строго по очереди.
-- **Post-Quantum Signatures:**
-  Блоки подписываются через абстракцию `PQ-Scheme`. В Devnet пока используется secp256k1-обертка, но структура данных (`pq_signature`, `pq_pub_key`) готова к внедрению Dilithium/Falcon.
-- **Dynamic Validator Set:**
-  Набор валидаторов пересчитывается каждые **10 блоков** (эпоха).
-- **Staking:**
-  Транзакция `STAKE` позволяет стать валидатором (минимальный стейк: **1000 CPC**).
+* **Architecture Overview**
+* **Running a Local Node**
+* **Staking & Validating**
+* **Wallet & Keys (cpc-cli)**
+* **GPU Workers & PoC Execution**
+* **API / RPC Reference**
 
-### 2. Networking & Synchronization
-
-- **Smart P2P Sync:**
-  Нода не производит новые блоки, пока не догонит сеть (режим `SYNCING`).
-- **Fork Resolution (Rollback):**
-  Автоматический откат (`rollback`) при обнаружении более длинной валидной цепи.
-- **Peer Persistence:**
-  Адреса пиров сохраняются в `peers.json`.
-
-### 3. Core Blockchain (Gas & Crypto)
-
-- **Gas Model (Fee Market):**
-  Реализована защита от спама, аналогичная Ethereum:
-  - Каждая транзакция имеет `gas_limit` и `gas_price`.
-  - **Base Fees:**
-    - Transfer: 21,000 gas
-    - Stake: 40,000 gas
-    - Submit Result: 80,000 gas
-  - Комиссия `fee = gas_used * gas_price` достается валидатору.
-- **State:** Аккаунт-based модель (`nonce`, `balance`, стейк).
-- **Storage:** SQLite с защитой от гонок.
-- **Safety:** Проверка подписей блоков и транзакций, защита от Time Drift.
-
-### 4. Proof-of-Compute Core (New)
-
-- **Data Structures:** Реализованы `ComputeTask` и `ComputeResult`.
-- **Transactions:** Новый тип транзакции `TxType.SUBMIT_RESULT`.
-- **L1 Integration:**
-  - В заголовке блока (`BlockHeader`) фиксируется `compute_root` (Merkle root результатов).
-  - Зарезервированы поля для **ZK-Proofs** (`zk_state_proof`, `zk_compute_proof`) для будущей верификации.
-
----
-
-## 🚀 Быстрый старт (Devnet, 2 ноды)
-
-### Требования
-
-- **Python 3.12+** (рекомендуется)
-- Linux / WSL / macOS
-
-### Установка зависимостей
+To start documentation locally:
 
 ```bash
-git clone <URL_ВАШЕГО_РЕПО> computechain
-cd computechain
-
-pip install -r requirements.txt
-```
-
-### Запуск локальной сети из двух валидаторов
-
-В репозитории есть скрипты для автоматического поднятия двухноды Devnet.
-
-**Терминал 1 — Node A (Genesis Validator):**
-
-```bash
-cd computechain
-chmod +x start_node_a.sh
-./start_node_a.sh
-```
-
-**Терминал 2 — Node B (второй валидатор):**
-
-```bash
-cd computechain
-chmod +x start_node_b.sh
-./start_node_b.sh
-```
-
-### Что вы увидите в логах
-
-После одной эпохи (10 блоков) валидаторы начнут чередоваться.
-Кошелек CLI теперь автоматически рассчитывает необходимый `gas` и `fee`.
-
----
-
-## 📖 Документация
-
-Полная документация доступна в директории `docs/` и построена с помощью MkDocs.
-
-**Поддерживаемые языки:**
-- 🇬🇧 **English** (по умолчанию)
-- 🇷🇺 **Русский**
-- 🇨🇳 **中文** (Китайский)
-
-### Локальный запуск документации
-
-**Быстрый запуск:**
-
-```bash
-chmod +x start_docs.sh
 ./start_docs.sh
 ```
 
-Документация будет доступна по адресу: `http://localhost:8008` (или `http://<your-ip>:8008`)
-
-**Или вручную:**
-
-```bash
-# Установить MkDocs и Material theme
-pip install mkdocs mkdocs-material
-
-# Запустить локальный сервер
-mkdocs serve -a 0.0.0.0:8008
-```
-
-Документация будет доступна по адресу: `http://localhost:8000` (или `http://<your-ip>:8008`)
-
-### Структура документации
-
-- **[Understand ComputeChain](docs/understand/overview.md)** — Архитектура и концепции
-- **[Wallets & Keys](docs/wallets/address-formats.md)** — Работа с кошельками
-- **[Staking & Validators](docs/staking/staking-basic.md)** — Как стать валидатором
-- **[GPU Workers / Mining](docs/mining/overview.md)** — Выполнение вычислений
-- **[Node & Network](docs/node/run-local.md)** — Запуск и настройка ноды
-- **[CLI & SDK](docs/cli/cpc-cli.md)** — Команды CLI
-- **[Testnet & Bug Bounty](docs/testnet/join.md)** — Подключение к тестнету
-- **[Reference](docs/reference/glossary.md)** — Справочник (типы транзакций, RPC API, глоссарий)
-
-Подробнее см. [docs/README.md](docs/README.md)
+Runs on: **[http://localhost:8008](http://localhost:8008)**
 
 ---
 
-## 🔧 CLI кошелёк (`cpc-cli`)
+## 🛠 Repository Structure
 
-### Проверить баланс
-
-```bash
-./cpc-cli query balance <ADDRESS> --node http://localhost:8000
 ```
-
-### Отправить монеты
-
-```bash
-./cpc-cli tx send <TO_ADDR> <AMOUNT> --from <KEY_NAME> --node http://localhost:8000
-```
-
-### Застейкать (стать валидатором)
-
-```bash
-./cpc-cli tx stake <AMOUNT> --from <KEY_NAME> --node http://localhost:8000
-```
-*(Публичный ключ берется автоматически из keystore)*
-
-### Отправить результат PoC (Майнинг)
-
-```bash
-./cpc-cli tx submit-result --task-id <UUID> --result-hash <HEX> --from <KEY_NAME>
-```
-
----
-
-## 🏗 Архитектура репозитория
-
-```text
 computechain/
-├── blockchain/      # L1-нода (Python)
-│   ├── core/        # Chain, State, Mempool (Gas logic here)
-│   ├── consensus/   # PoA Engine, Proposer (PQ signing)
-│   ├── p2p/         # P2P Node, Protocol
-│   └── storage/     # SQLite DB
-├── protocol/        # Общий протокол
-│   ├── types/       # Block (new header fields), Tx, PoC
-│   ├── crypto/      # PQ (new), Keys, Hashes
-│   └── config/      # Params (Gas costs, limits)
-├── cli/             # Пользовательский CLI (cpc-cli)
-├── scripts/
-│   ├── start_node_a.sh
-│   ├── start_node_b.sh
-│   └── e2e_battle.py  # Сценарий боевого теста (Gas/Spam/Consensus)
+├── blockchain/      # L1 node: consensus, state, networking
+│   ├── core/        # Chain, mempool, gas logic
+│   ├── consensus/   # PoA engine (PQ-ready)
+│   ├── p2p/         # Lightweight P2P protocol
+│   └── storage/     # SQLite backend
+├── protocol/        # Shared protocol definitions
+│   ├── types/       # Blocks, tx, PoC structures
+│   ├── crypto/      # PQ signing abstraction
+│   └── config/      # Network & gas parameters
+├── cli/             # cpc-cli wallet & transaction tool
+├── docs/            # Full documentation site
+└── scripts/         # Devnet helpers & E2E tests
 ```
 
 ---
 
-## ⚙️ Конфигурация (Devnet)
+## 🧭 Roadmap (High-Level)
 
-Основные параметры сети (`protocol/config/params.py`):
+### **Completed**
 
-- `BLOCK_TIME`: `10` сек
-- `EPOCH_LENGTH`: `10` блоков
-- `MIN_GAS_PRICE`: `1000`
-- `BLOCK_GAS_LIMIT`: `10,000,000`
-- **Gas Costs:**
-  - Transfer: `21,000`
-  - Stake: `40,000`
-  - Submit Result: `80,000`
+* Multi-Validator PoA Consensus
+* Dynamic Validator Set
+* Post-Quantum Signature Architecture
+* Gas Model & Fee Market
+* Proof-of-Compute Framework (Stage 4)
 
----
+### **In Progress**
 
-## 🧠 Логика консенсуса и разрешения форков
-
-### Round-Robin Proposer
-Валидаторы производят блоки строго по очереди. Если валидатор пропускает слот, сеть ждет следующего раунда.
-
-### Fork Resolution
-Если нода обнаруживает более длинную цепь (рассинхронизация `prev_hash`), она делает `rollback` локальных блоков и загружает правильную ветку от пиров.
+* GPU Worker Runtime (PoC Execution Engine)
+* Task Orchestrator & Compute Market
+* ZK-Proof Integration for compute verification
 
 ---
 
-## 🔮 Roadmap & TZ
+## 🧪 Development
 
-Полное техническое задание на PoC-фреймворк: [TZ_POC.md](TZ_POC.md).
+Run unit tests:
 
-### Stage 1-3: Foundation (✅)
-- [x] Basic Core, P2P, RPC.
-- [x] Multi-Validator PoA Consensus.
-- [x] Dynamic Staking & Peer Persistence.
-
-### Stage 4: Framework & Security (✅ Current)
-- [x] **Post-Quantum Architecture:** PQ-подписи в блоках и валидаторах.
-- [x] **Gas & Fees:** Экономическая защита от спама.
-- [x] **PoC Integration:** `compute_root`, структуры задач.
-- [x] **E2E Tests:** Боевые сценарии с несколькими валидаторами и защитой от спама.
-
-### Stage 5: Proof-of-Compute & Market (🚧 Next)
-- [ ] **GPU Workers:** Реальная обработка задач на Python/CUDA.
-- [ ] **PoC-Validator:** Оркестрация задач и воркеров.
-- [ ] **Task Market:** API для публикации и оплаты задач.
-
----
-
-## 🧪 Тестирование и разработка
-
-Запуск юнит-тестов:
 ```bash
-python3 -m pytest computechain/blockchain/tests
+pytest computechain/blockchain/tests
 ```
 
-Запуск E2E теста (требует запущенных Node A и Node B):
+End-to-end testing scenario:
+
 ```bash
 python3 scripts/e2e_battle.py
 ```
 
 ---
 
-## 📜 Лицензия
-MIT License
+## 📄 License
+
+**MIT License**
