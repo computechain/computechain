@@ -2,8 +2,10 @@
 import sys
 import os
 
-# Add current directory to python path
-sys.path.append(os.getcwd())
+# Add parent directory to python path to find computechain module
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+sys.path.insert(0, parent_dir)
 
 from computechain.cli.main import main
 
