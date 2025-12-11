@@ -8,6 +8,23 @@ class Validator(BaseModel):
     is_active: bool = True
     reward_address: Optional[str] = None # Address to receive rewards
 
+    # Performance tracking (Phase 0: Validator Performance System)
+    blocks_proposed: int = 0          # How many blocks created
+    blocks_expected: int = 0          # How many blocks should have created
+    missed_blocks: int = 0            # Consecutive missed blocks
+    last_block_height: int = 0        # Last block height proposed
+    uptime_score: float = 1.0         # Score from 0.0 to 1.0
+    performance_score: float = 1.0    # Overall performance score
+
+    # Penalties & Slashing
+    total_penalties: int = 0          # Total penalties applied
+    jailed_until_height: int = 0      # Jailed until this block height (0 = not jailed)
+    jail_count: int = 0               # Number of times jailed
+
+    # Metadata
+    joined_height: int = 0            # Block height when validator joined
+    last_seen_height: int = 0         # Last block height when active
+
 class ValidatorSet(BaseModel):
     validators: List[Validator]
     total_power: int = 0

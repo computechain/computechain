@@ -56,3 +56,15 @@ logs/
 .vscode/
 *.swp
 .DS_Store
+
+# Development planning (local only)
+DEV_PLAN.md
+ROADMAP_LOCAL.md
+TODO_DEV.md
+README_TESTING.txt
+
+# Test scripts and local guides (optional - keep for development)
+# Uncomment if you want these to be local only:
+# TEST_GUIDE.md
+# QUICK_START.md
+# VALIDATOR_PERFORMANCE_GUIDE.md
