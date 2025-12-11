@@ -1,4 +1,6 @@
 from fastapi import FastAPI, HTTPException, Body
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from ...protocol.types.tx import Transaction
@@ -7,14 +9,32 @@ from ...protocol.types.validator import Validator
 from ..core.chain import Blockchain
 from ..core.mempool import Mempool
 import logging
+import os
 
 app = FastAPI(title="ComputeChain Node RPC")
+
+# Enable CORS for dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify exact origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 chain: Optional[Blockchain] = None
 mempool: Optional[Mempool] = None
 
 class TxResponse(BaseModel):
     tx_hash: str
     status: str
+
+@app.get("/")
+async def serve_dashboard():
+    """Serve the dashboard HTML."""
+    dashboard_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "dashboard.html")
+    if os.path.exists(dashboard_path):
+        return FileResponse(dashboard_path)
+    return {"message": "ComputeChain Node RPC", "version": "1.0"}
 
 @app.get("/status")
 async def get_status():
@@ -56,6 +76,103 @@ async def get_validators():
     return {
         "epoch": chain.state.epoch_index,
         "validators": vals
+    }
+
+@app.get("/validator/{address}")
+async def get_validator(address: str):
+    """Get detailed validator information including performance metrics."""
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+    val = chain.state.get_validator(address)
+    if not val:
+        raise HTTPException(status_code=404, detail="Validator not found")
+    return val
+
+@app.get("/validator/{address}/performance")
+async def get_validator_performance(address: str):
+    """Get validator performance statistics."""
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+    val = chain.state.get_validator(address)
+    if not val:
+        raise HTTPException(status_code=404, detail="Validator not found")
+
+    return {
+        "address": val.address,
+        "is_active": val.is_active,
+        "performance_score": val.performance_score,
+        "uptime_score": val.uptime_score,
+        "blocks_proposed": val.blocks_proposed,
+        "blocks_expected": val.blocks_expected,
+        "missed_blocks": val.missed_blocks,
+        "last_block_height": val.last_block_height,
+        "power": val.power,
+        "total_penalties": val.total_penalties,
+        "jailed_until_height": val.jailed_until_height,
+        "jail_count": val.jail_count,
+        "joined_height": val.joined_height,
+        "last_seen_height": val.last_seen_height
+    }
+
+@app.get("/validators/leaderboard")
+async def get_validators_leaderboard():
+    """Get validators sorted by performance score."""
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+
+    vals = chain.state.get_all_validators()
+
+    # Sort by performance score
+    sorted_vals = sorted(vals, key=lambda v: v.performance_score, reverse=True)
+
+    leaderboard = []
+    for rank, val in enumerate(sorted_vals, 1):
+        leaderboard.append({
+            "rank": rank,
+            "address": val.address,
+            "is_active": val.is_active,
+            "performance_score": val.performance_score,
+            "uptime_score": val.uptime_score,
+            "power": val.power,
+            "blocks_proposed": val.blocks_proposed,
+            "blocks_expected": val.blocks_expected,
+            "missed_blocks": val.missed_blocks,
+            "jailed": val.jailed_until_height > chain.height,
+            "jail_count": val.jail_count
+        })
+
+    return {
+        "epoch": chain.state.epoch_index,
+        "current_height": chain.height,
+        "leaderboard": leaderboard
+    }
+
+@app.get("/validators/jailed")
+async def get_jailed_validators():
+    """Get list of currently jailed validators."""
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+
+    vals = chain.state.get_all_validators()
+    current_height = chain.height
+
+    jailed = [
+        {
+            "address": v.address,
+            "jailed_until_height": v.jailed_until_height,
+            "blocks_remaining": max(0, v.jailed_until_height - current_height),
+            "jail_count": v.jail_count,
+            "total_penalties": v.total_penalties,
+            "power": v.power
+        }
+        for v in vals
+        if v.jailed_until_height > current_height
+    ]
+
+    return {
+        "current_height": current_height,
+        "jailed_count": len(jailed),
+        "jailed_validators": jailed
     }
 
 @app.post("/tx/send")

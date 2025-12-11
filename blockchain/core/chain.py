@@ -250,6 +250,12 @@ class Blockchain:
             else:
                 logger.warning("No validators in set! Accepting block from anyone (Bootstrap mode).")
 
+        # 2.5. Track Performance (Phase 0)
+        # Track proposer performance
+        self._track_proposer_performance(block)
+        # Track missed blocks (if any)
+        self._track_missed_blocks(block)
+
         # 3. Simulation / Validate Transactions
         tmp_state = self.state.clone()
         
@@ -436,20 +442,203 @@ class Blockchain:
         logger.info("State rebuild complete.")
 
     def _process_epoch_transition(self, state: AccountState):
-        """Helper to process epoch changes on a state object."""
+        """
+        Process epoch changes with performance-based validator selection (Phase 0).
+        Jails validators who missed too many blocks, calculates performance scores,
+        and selects top N validators by score (not just stake).
+        """
         all_vals = state.get_all_validators()
-        candidates = [v for v in all_vals if v.power >= self.config.min_validator_stake]
-        candidates.sort(key=lambda v: v.power, reverse=True)
+        current_height = self.height + 1
+
+        logger.info(f"=== Epoch {state.epoch_index} Transition (Block {current_height}) ===")
+
+        # 1. Filter candidates: sufficient stake and NOT jailed
+        candidates = [
+            v for v in all_vals
+            if v.power >= self.config.min_validator_stake
+            and v.jailed_until_height < current_height
+        ]
+
+        # 2. Calculate performance scores for all candidates
+        for v in candidates:
+            old_score = v.performance_score
+            v.performance_score = self._calculate_performance_score(v, state)
+            v.uptime_score = v.blocks_proposed / max(v.blocks_expected, 1) if v.blocks_expected > 0 else 1.0
+            logger.info(f"  Validator {v.address[:12]}: score={v.performance_score:.3f} (was {old_score:.3f}), uptime={v.uptime_score:.3f}, proposed={v.blocks_proposed}/{v.blocks_expected}, missed={v.missed_blocks}")
+            state.set_validator(v)
+
+        # 3. Sort by performance_score (not just power!)
+        candidates.sort(key=lambda v: v.performance_score, reverse=True)
+
+        # 4. Select top N
         new_active = candidates[:self.config.max_validators]
         active_addresses = {v.address for v in new_active}
-        
+
+        # 5. Apply penalties & jail for those who violated rules
         for v in all_vals:
+            # Check for jail condition (missed too many blocks)
+            if v.missed_blocks >= self.config.max_missed_blocks_sequential and v.is_active:
+                self._jail_validator(v, state, current_height)
+                continue  # Skip further processing for this validator
+
+            # Update active status
+            was_active = v.is_active
             is_active = v.address in active_addresses
-            if v.is_active != is_active:
+
+            if was_active != is_active:
                 v.is_active = is_active
+                if not is_active:
+                    logger.warning(f"  ❌ Validator {v.address[:12]} removed from active set (low performance)")
+                else:
+                    logger.info(f"  ✅ Validator {v.address[:12]} added to active set")
                 state.set_validator(v)
-        
+
+        # 6. Log new active set
+        active_vals = [v for v in state.get_all_validators() if v.is_active]
+        logger.info(f"New Active Set ({len(active_vals)}/{self.config.max_validators}):")
+        for v in sorted(active_vals, key=lambda x: x.performance_score, reverse=True):
+            logger.info(f"  - {v.address[:12]} | score={v.performance_score:.3f} | power={v.power}")
+
+        # 7. Increment epoch
         state.epoch_index += 1
+
+        # 8. Start tracking for the new epoch
+        self._start_epoch_tracking(state)
+
+    # ========================================
+    # Phase 0: Validator Performance & Slashing
+    # ========================================
+
+    def _track_proposer_performance(self, block: Block):
+        """
+        Tracks the proposer's performance when a block is added.
+        Updates blocks_proposed, last_block_height, and resets missed_blocks.
+        """
+        proposer_addr = block.header.proposer_address
+        proposer_val = self.state.get_validator(proposer_addr)
+
+        if proposer_val:
+            proposer_val.blocks_proposed += 1
+            proposer_val.last_block_height = block.header.height
+            proposer_val.last_seen_height = block.header.height
+            proposer_val.missed_blocks = 0  # Reset consecutive misses
+            self.state.set_validator(proposer_val)
+            logger.debug(f"Validator {proposer_addr[:12]} proposed block {block.header.height}")
+
+    def _track_missed_blocks(self, block: Block):
+        """
+        Checks if there were missed blocks between last_block and current block
+        based on timestamps. Increments missed_blocks for validators who should
+        have proposed but didn't.
+        """
+        if self.height < 0:
+            return  # Genesis block
+
+        time_diff = block.header.timestamp - self.last_block_timestamp
+        block_time = self.config.block_time_sec
+
+        # Calculate how many blocks should have been created
+        expected_blocks = time_diff // block_time
+
+        if expected_blocks > 1:
+            # There were missed blocks!
+            missed_count = int(expected_blocks - 1)
+            logger.warning(f"Detected {missed_count} missed blocks (time gap: {time_diff}s)")
+
+            for i in range(1, missed_count + 1):
+                missed_height = self.height + i
+                expected_proposer = self.consensus.get_proposer(missed_height, round=0)
+
+                if expected_proposer:
+                    val = self.state.get_validator(expected_proposer.address)
+                    if val and val.is_active:
+                        val.missed_blocks += 1
+                        logger.warning(f"⚠️  Validator {val.address[:12]} missed block at height {missed_height} (total consecutive: {val.missed_blocks})")
+                        self.state.set_validator(val)
+
+    def _calculate_performance_score(self, val: Validator, state: AccountState) -> float:
+        """
+        Calculates performance score for a validator.
+
+        Formula:
+        - 60% uptime (blocks_proposed / blocks_expected)
+        - 20% stake ratio (relative to total network stake)
+        - 20% penalty history (1 - penalty_ratio)
+        """
+        # Uptime score
+        if val.blocks_expected > 0:
+            uptime_score = val.blocks_proposed / val.blocks_expected
+        else:
+            uptime_score = 1.0  # No expectations yet
+
+        # Stake ratio (relative to total network stake)
+        all_vals = state.get_all_validators()
+        total_stake = sum(v.power for v in all_vals)
+        stake_ratio = val.power / max(total_stake, 1)
+
+        # Penalty ratio (capped at 0.5)
+        penalty_ratio = min(val.total_penalties / max(val.power, 1), 0.5)
+
+        # Combined score
+        score = (
+            0.6 * uptime_score +
+            0.2 * stake_ratio +
+            0.2 * (1 - penalty_ratio)
+        )
+
+        return max(0.0, min(1.0, score))  # Clamp to [0, 1]
+
+    def _jail_validator(self, val: Validator, state: AccountState, current_height: int):
+        """
+        Jails a validator for missing too many blocks.
+        Applies penalty (slashing) and temporarily removes from active set.
+        """
+        # Calculate penalty (% of stake)
+        penalty = int(val.power * self.config.slashing_penalty_rate)
+
+        # Apply penalty
+        val.power = max(0, val.power - penalty)
+        val.total_penalties += penalty
+        val.jail_count += 1
+        val.jailed_until_height = current_height + self.config.jail_duration_blocks
+        val.missed_blocks = 0  # Reset counter
+        val.is_active = False
+
+        logger.warning(
+            f"⚠️  JAILED: Validator {val.address[:12]} | "
+            f"Penalty: {penalty} | "
+            f"Jail #{val.jail_count} until block {val.jailed_until_height} | "
+            f"Remaining power: {val.power}"
+        )
+
+        # If too many jails -> permanent ejection
+        if val.jail_count >= self.config.ejection_threshold_jails:
+            logger.error(f"❌ EJECTED: Validator {val.address[:12]} (too many jails: {val.jail_count})")
+            val.is_active = False
+            val.power = 0  # Full slash
+
+        state.set_validator(val)
+
+    def _start_epoch_tracking(self, state: AccountState):
+        """
+        Initializes expected_blocks counter for active validators at epoch start.
+        Calculates how many blocks each validator should produce in the epoch.
+        """
+        active_vals = [v for v in state.get_all_validators() if v.is_active]
+        blocks_per_epoch = self.config.epoch_length_blocks
+
+        if not active_vals:
+            return
+
+        # In Round-Robin, each validator should create roughly equal blocks
+        expected_per_val = blocks_per_epoch // len(active_vals)
+        remainder = blocks_per_epoch % len(active_vals)
+
+        for i, v in enumerate(sorted(active_vals, key=lambda x: x.address)):
+            v.blocks_expected = expected_per_val + (1 if i < remainder else 0)
+            v.blocks_proposed = 0  # Reset for new epoch
+            state.set_validator(v)
+            logger.debug(f"Epoch tracking: {v.address[:12]} expected to propose {v.blocks_expected} blocks")
 
     def _rollback_last_block_impl(self):
         """

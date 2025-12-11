@@ -16,7 +16,7 @@ GAS_PER_TYPE = {
 }
 
 class NetworkConfig:
-    def __init__(self, 
+    def __init__(self,
                  network_id: str,
                  chain_id: str,
                  block_time_sec: int,
@@ -32,6 +32,13 @@ class NetworkConfig:
                  epoch_length_blocks: int = 10,
                  min_validator_stake: int = 1000,
                  max_validators: int = 5,
+                 # Validator performance params (Phase 0)
+                 min_uptime_score: float = 0.75,
+                 max_missed_blocks_sequential: int = 10,
+                 jail_duration_blocks: int = 100,
+                 slashing_penalty_rate: float = 0.05,
+                 ejection_threshold_jails: int = 3,
+                 performance_lookback_epochs: int = 3,
                  # Devnet specific deterministic keys (hex strings)
                  faucet_priv_key: str = None):
         self.network_id = network_id
@@ -48,6 +55,13 @@ class NetworkConfig:
         self.epoch_length_blocks = epoch_length_blocks
         self.min_validator_stake = min_validator_stake
         self.max_validators = max_validators
+        # Performance params
+        self.min_uptime_score = min_uptime_score
+        self.max_missed_blocks_sequential = max_missed_blocks_sequential
+        self.jail_duration_blocks = jail_duration_blocks
+        self.slashing_penalty_rate = slashing_penalty_rate
+        self.ejection_threshold_jails = ejection_threshold_jails
+        self.performance_lookback_epochs = performance_lookback_epochs
         self.faucet_priv_key = faucet_priv_key
 
 NETWORKS: Dict[str, NetworkConfig] = {
