@@ -145,9 +145,13 @@ class AccountState:
         # We deduct exactly needed_fee (burned/collected), rest of tx.fee is ignored (savings)
         spent_fee = needed_fee
 
-        # For UNSTAKE, we only need fee (amount is withdrawn from validator stake)
+        # For UNSTAKE and UPDATE_VALIDATOR, we only need fee (no amount transfer)
+        # For UNDELEGATE, amount is returned from validator delegation
         # For other types, we need amount + fee
-        if tx.tx_type == TxType.UNSTAKE:
+        if tx.tx_type in [TxType.UNSTAKE, TxType.UPDATE_VALIDATOR]:
+            total_cost = spent_fee
+        elif tx.tx_type == TxType.UNDELEGATE:
+            # UNDELEGATE only requires fee, amount is returned from delegation
             total_cost = spent_fee
         else:
             total_cost = tx.amount + spent_fee
@@ -272,6 +276,140 @@ class AccountState:
                  # For MVP, we accept it if structure is valid.
              except Exception as e:
                  raise ValueError(f"Invalid ComputeResult: {e}")
+
+        elif tx.tx_type == TxType.UPDATE_VALIDATOR:
+            # Phase 1: Update validator metadata (name, website, description)
+            pub_key_hex = tx.payload.get("pub_key")
+            if not pub_key_hex:
+                raise ValueError("UPDATE_VALIDATOR must provide 'pub_key' in payload")
+
+            # Derive validator address
+            val_pub_bytes = bytes.fromhex(pub_key_hex)
+            val_addr = address_from_pubkey(val_pub_bytes, prefix="cpcvalcons")
+
+            # Get validator
+            val = self.get_validator(val_addr)
+            if not val:
+                raise ValueError(f"Validator {val_addr} not found")
+
+            # Only validator owner can update metadata
+            if val.reward_address != tx.from_address:
+                raise ValueError(f"Only validator owner can update metadata")
+
+            # Update metadata fields
+            if "name" in tx.payload:
+                name = tx.payload["name"]
+                if len(name) > 64:
+                    raise ValueError("Validator name too long (max 64 chars)")
+                val.name = name
+
+            if "website" in tx.payload:
+                website = tx.payload["website"]
+                if len(website) > 128:
+                    raise ValueError("Website URL too long (max 128 chars)")
+                val.website = website
+
+            if "description" in tx.payload:
+                description = tx.payload["description"]
+                if len(description) > 256:
+                    raise ValueError("Description too long (max 256 chars)")
+                val.description = description
+
+            if "commission_rate" in tx.payload:
+                commission_rate = float(tx.payload["commission_rate"])
+                if commission_rate < 0 or commission_rate > 1.0:
+                    raise ValueError("Commission rate must be between 0.0 and 1.0")
+                val.commission_rate = commission_rate
+
+            self.set_validator(val)
+
+        elif tx.tx_type == TxType.DELEGATE:
+            # Phase 2: Delegate tokens to a validator
+            validator_addr = tx.payload.get("validator")
+            if not validator_addr:
+                raise ValueError("DELEGATE must provide 'validator' address in payload")
+
+            # Get validator
+            val = self.get_validator(validator_addr)
+            if not val:
+                raise ValueError(f"Validator {validator_addr} not found")
+
+            # Check minimum delegation amount
+            # TODO: Add min_delegation config check
+
+            # Update validator's delegated amount
+            val.total_delegated += tx.amount
+            val.power += tx.amount  # Delegated stake counts as voting power
+
+            # Create or update delegation record
+            # For now, we just update the totals
+            # TODO: Track individual delegations in validator.delegations list
+
+            self.set_validator(val)
+
+        elif tx.tx_type == TxType.UNDELEGATE:
+            # Phase 2: Undelegate tokens from a validator
+            validator_addr = tx.payload.get("validator")
+            if not validator_addr:
+                raise ValueError("UNDELEGATE must provide 'validator' address in payload")
+
+            # Get validator
+            val = self.get_validator(validator_addr)
+            if not val:
+                raise ValueError(f"Validator {validator_addr} not found")
+
+            # Check if validator has enough delegated stake
+            if val.total_delegated < tx.amount:
+                raise ValueError(f"Insufficient delegated stake: validator has {val.total_delegated}, trying to undelegate {tx.amount}")
+
+            # Update validator's delegated amount
+            val.total_delegated -= tx.amount
+            val.power -= tx.amount
+
+            # Return tokens to delegator
+            sender = self.get_account(tx.from_address)
+            sender.balance += tx.amount
+            self.set_account(sender)
+
+            self.set_validator(val)
+
+        elif tx.tx_type == TxType.UNJAIL:
+            # Phase 3: Request early release from jail (expensive!)
+            pub_key_hex = tx.payload.get("pub_key")
+            if not pub_key_hex:
+                raise ValueError("UNJAIL must provide 'pub_key' in payload")
+
+            # Derive validator address
+            val_pub_bytes = bytes.fromhex(pub_key_hex)
+            val_addr = address_from_pubkey(val_pub_bytes, prefix="cpcvalcons")
+
+            # Get validator
+            val = self.get_validator(val_addr)
+            if not val:
+                raise ValueError(f"Validator {val_addr} not found")
+
+            # Check if validator is jailed
+            if val.jailed_until_height == 0:
+                raise ValueError(f"Validator {val_addr} is not jailed")
+
+            # Only validator owner can unjail
+            if val.reward_address != tx.from_address:
+                raise ValueError("Only validator owner can unjail")
+
+            # Check if validator paid unjail fee (in tx.amount)
+            # TODO: Use self.config.unjail_fee when available
+            unjail_fee = 1000 * 10**18  # 1000 CPC
+            if tx.amount < unjail_fee:
+                raise ValueError(f"Insufficient unjail fee: need {unjail_fee}, got {tx.amount}")
+
+            # Release from jail
+            val.jailed_until_height = 0
+            val.missed_blocks = 0
+            val.is_active = True  # Reactivate validator
+
+            self.set_validator(val)
+
+            # Unjail fee is burned (already deducted from balance)
 
         # 5. Handle Fees - implicitly burned or collected by block proposer later
         return True

@@ -262,6 +262,178 @@ def cmd_tx_unstake(args):
     print(f"Unstaking {args.amount} {DENOM} from validator {from_addr}...")
     broadcast_tx(url, tx)
 
+def cmd_tx_update_validator(args):
+    ks = KeyStore()
+    sender_key = ks.get_key(args.from_name)
+    if not sender_key:
+        print(f"Key '{args.from_name}' not found.")
+        sys.exit(1)
+
+    url = get_node_url(args)
+    from_addr = sender_key['address']
+    priv_key_bytes = bytes.fromhex(sender_key['private_key'])
+    pub_key_hex = sender_key['public_key']
+
+    try:
+        nonce = get_nonce(url, from_addr)
+    except Exception as e:
+        print(e)
+        sys.exit(1)
+
+    # Build payload with only provided fields
+    payload = {"pub_key": pub_key_hex}
+    if args.name:
+        payload["name"] = args.name
+    if args.website:
+        payload["website"] = args.website
+    if args.description:
+        payload["description"] = args.description
+    if args.commission is not None:
+        payload["commission_rate"] = args.commission
+
+    # Calculate fee
+    fee = args.gas_limit * args.gas_price
+
+    tx = Transaction(
+        tx_type=TxType.UPDATE_VALIDATOR,
+        from_address=from_addr,
+        to_address=None,
+        amount=0,  # No token transfer
+        fee=fee,
+        nonce=nonce,
+        gas_price=args.gas_price,
+        gas_limit=args.gas_limit,
+        timestamp=int(time.time()),
+        pub_key=pub_key_hex,
+        payload=payload
+    )
+
+    tx.sign(priv_key_bytes)
+
+    print(f"Updating validator metadata...")
+    broadcast_tx(url, tx)
+
+def cmd_tx_delegate(args):
+    ks = KeyStore()
+    sender_key = ks.get_key(args.from_name)
+    if not sender_key:
+        print(f"Key '{args.from_name}' not found.")
+        sys.exit(1)
+
+    url = get_node_url(args)
+    from_addr = sender_key['address']
+    priv_key_bytes = bytes.fromhex(sender_key['private_key'])
+    pub_key_hex = sender_key['public_key']
+
+    try:
+        nonce = get_nonce(url, from_addr)
+    except Exception as e:
+        print(e)
+        sys.exit(1)
+
+    amount_units = int(float(args.amount) * 10**DECIMALS)
+    fee = args.gas_limit * args.gas_price
+
+    tx = Transaction(
+        tx_type=TxType.DELEGATE,
+        from_address=from_addr,
+        to_address=None,
+        amount=amount_units,
+        fee=fee,
+        nonce=nonce,
+        gas_price=args.gas_price,
+        gas_limit=args.gas_limit,
+        timestamp=int(time.time()),
+        pub_key=pub_key_hex,
+        payload={"validator": args.validator}
+    )
+
+    tx.sign(priv_key_bytes)
+
+    print(f"Delegating {args.amount} {DENOM} to validator {args.validator}...")
+    broadcast_tx(url, tx)
+
+def cmd_tx_undelegate(args):
+    ks = KeyStore()
+    sender_key = ks.get_key(args.from_name)
+    if not sender_key:
+        print(f"Key '{args.from_name}' not found.")
+        sys.exit(1)
+
+    url = get_node_url(args)
+    from_addr = sender_key['address']
+    priv_key_bytes = bytes.fromhex(sender_key['private_key'])
+    pub_key_hex = sender_key['public_key']
+
+    try:
+        nonce = get_nonce(url, from_addr)
+    except Exception as e:
+        print(e)
+        sys.exit(1)
+
+    amount_units = int(float(args.amount) * 10**DECIMALS)
+    fee = args.gas_limit * args.gas_price
+
+    tx = Transaction(
+        tx_type=TxType.UNDELEGATE,
+        from_address=from_addr,
+        to_address=None,
+        amount=amount_units,
+        fee=fee,
+        nonce=nonce,
+        gas_price=args.gas_price,
+        gas_limit=args.gas_limit,
+        timestamp=int(time.time()),
+        pub_key=pub_key_hex,
+        payload={"validator": args.validator}
+    )
+
+    tx.sign(priv_key_bytes)
+
+    print(f"Undelegating {args.amount} {DENOM} from validator {args.validator}...")
+    broadcast_tx(url, tx)
+
+def cmd_tx_unjail(args):
+    ks = KeyStore()
+    sender_key = ks.get_key(args.from_name)
+    if not sender_key:
+        print(f"Key '{args.from_name}' not found.")
+        sys.exit(1)
+
+    url = get_node_url(args)
+    from_addr = sender_key['address']
+    priv_key_bytes = bytes.fromhex(sender_key['private_key'])
+    pub_key_hex = sender_key['public_key']
+
+    try:
+        nonce = get_nonce(url, from_addr)
+    except Exception as e:
+        print(e)
+        sys.exit(1)
+
+    # Unjail fee: 1000 CPC
+    unjail_amount = int(1000 * 10**DECIMALS)
+    fee = args.gas_limit * args.gas_price
+
+    tx = Transaction(
+        tx_type=TxType.UNJAIL,
+        from_address=from_addr,
+        to_address=None,
+        amount=unjail_amount,  # Unjail fee
+        fee=fee,
+        nonce=nonce,
+        gas_price=args.gas_price,
+        gas_limit=args.gas_limit,
+        timestamp=int(time.time()),
+        pub_key=pub_key_hex,
+        payload={"pub_key": pub_key_hex}
+    )
+
+    tx.sign(priv_key_bytes)
+
+    print(f"Requesting unjail (fee: 1000 {DENOM})...")
+    broadcast_tx(url, tx)
+
 def cmd_tx_submit_result(args):
     ks = KeyStore()
     sender_key = ks.get_key(args.from_name)
@@ -370,6 +542,34 @@ def main():
     pt_unstake.add_argument("--gas-price", type=int, default=1000, help="Gas price")
     pt_unstake.add_argument("--gas-limit", type=int, default=100000, help="Gas limit")
 
+    pt_update_val = sp_tx.add_parser("update-validator", help="Update validator metadata")
+    pt_update_val.add_argument("--name", help="Validator name (max 64 chars)")
+    pt_update_val.add_argument("--website", help="Website URL (max 128 chars)")
+    pt_update_val.add_argument("--description", help="Description (max 256 chars)")
+    pt_update_val.add_argument("--commission", type=float, help="Commission rate (0.0-1.0)")
+    pt_update_val.add_argument("--from", dest="from_name", required=True, help="Validator key name")
+    pt_update_val.add_argument("--gas-price", type=int, default=1000, help="Gas price")
+    pt_update_val.add_argument("--gas-limit", type=int, default=50000, help="Gas limit")
+
+    pt_delegate = sp_tx.add_parser("delegate", help="Delegate tokens to validator")
+    pt_delegate.add_argument("validator", help="Validator address (cpcvalcons...)")
+    pt_delegate.add_argument("amount", type=float, help="Amount to delegate in CPC")
+    pt_delegate.add_argument("--from", dest="from_name", required=True, help="Delegator key name")
+    pt_delegate.add_argument("--gas-price", type=int, default=1000, help="Gas price")
+    pt_delegate.add_argument("--gas-limit", type=int, default=50000, help="Gas limit")
+
+    pt_undelegate = sp_tx.add_parser("undelegate", help="Undelegate tokens from validator")
+    pt_undelegate.add_argument("validator", help="Validator address (cpcvalcons...)")
+    pt_undelegate.add_argument("amount", type=float, help="Amount to undelegate in CPC")
+    pt_undelegate.add_argument("--from", dest="from_name", required=True, help="Delegator key name")
+    pt_undelegate.add_argument("--gas-price", type=int, default=1000, help="Gas price")
+    pt_undelegate.add_argument("--gas-limit", type=int, default=50000, help="Gas limit")
+
+    pt_unjail = sp_tx.add_parser("unjail", help="Request early release from jail")
+    pt_unjail.add_argument("--from", dest="from_name", required=True, help="Validator key name")
+    pt_unjail.add_argument("--gas-price", type=int, default=1000, help="Gas price")
+    pt_unjail.add_argument("--gas-limit", type=int, default=100000, help="Gas limit")
+
     pt_res = sp_tx.add_parser("submit-result", help="Submit PoC result")
     pt_res.add_argument("--task-id", required=True)
     pt_res.add_argument("--result-hash", required=True)
@@ -396,6 +596,10 @@ def main():
         if args.subcommand == "send": cmd_tx_send(args)
         elif args.subcommand == "stake": cmd_tx_stake(args)
         elif args.subcommand == "unstake": cmd_tx_unstake(args)
+        elif args.subcommand == "update-validator": cmd_tx_update_validator(args)
+        elif args.subcommand == "delegate": cmd_tx_delegate(args)
+        elif args.subcommand == "undelegate": cmd_tx_undelegate(args)
+        elif args.subcommand == "unjail": cmd_tx_unjail(args)
         elif args.subcommand == "submit-result": cmd_tx_submit_result(args)
         else: p_tx.print_help()
         

@@ -355,19 +355,37 @@ class Blockchain:
                  return
 
         acc = state.get_account(target_addr)
-        
+
         # Calculate total reward
         block_reward = calculate_block_reward(block.header.height)
-        
+
         fees_total = 0
         for tx in block.txs:
             base_gas = GAS_PER_TYPE.get(tx.tx_type, 0)
             fees_total += base_gas * tx.gas_price
-            
-        total_amount = block_reward + fees_total
-        acc.balance += total_amount
+
+        total_reward = block_reward + fees_total
+
+        # Phase 2: Commission-based distribution
+        if val.total_delegated > 0:
+            # Validator has delegations - apply commission
+            commission_amount = int(total_reward * val.commission_rate)
+            delegators_share = total_reward - commission_amount
+
+            # Validator gets commission
+            acc.balance += commission_amount
+
+            # TODO: Distribute delegators_share proportionally to delegators
+            # For now, delegators_share is burned (not distributed)
+            # This will be implemented when we track individual delegations
+
+            logger.info(f"Distributed {commission_amount} (commission {val.commission_rate:.1%}) to validator {target_addr}, delegators_share {delegators_share} burned (pending delegation tracking)")
+        else:
+            # No delegations - validator gets everything
+            acc.balance += total_reward
+            # logger.info(f"Distributed {total_reward} (Reward: {block_reward}, Fees: {fees_total}) to {target_addr}")
+
         state.set_account(acc)
-        # logger.info(f"Distributed {total_amount} (Reward: {block_reward}, Fees: {fees_total}) to {target_addr}")
 
     def compute_poc_root(self, txs: List[Transaction]) -> str:
         leaves = []
@@ -459,7 +477,13 @@ class Blockchain:
             and v.jailed_until_height < current_height
         ]
 
-        # 2. Calculate performance scores for all candidates
+        # 2. Filter by minimum uptime score (if they have history)
+        candidates = [
+            v for v in candidates
+            if v.blocks_expected == 0 or v.uptime_score >= self.config.min_uptime_score
+        ]
+
+        # 3. Calculate performance scores for all candidates
         for v in candidates:
             old_score = v.performance_score
             v.performance_score = self._calculate_performance_score(v, state)
@@ -467,14 +491,14 @@ class Blockchain:
             logger.info(f"  Validator {v.address[:12]}: score={v.performance_score:.3f} (was {old_score:.3f}), uptime={v.uptime_score:.3f}, proposed={v.blocks_proposed}/{v.blocks_expected}, missed={v.missed_blocks}")
             state.set_validator(v)
 
-        # 3. Sort by performance_score (not just power!)
+        # 4. Sort by performance_score (not just power!)
         candidates.sort(key=lambda v: v.performance_score, reverse=True)
 
-        # 4. Select top N
+        # 5. Select top N
         new_active = candidates[:self.config.max_validators]
         active_addresses = {v.address for v in new_active}
 
-        # 5. Apply penalties & jail for those who violated rules
+        # 6. Apply penalties & jail for those who violated rules
         for v in all_vals:
             # Check for jail condition (missed too many blocks)
             if v.missed_blocks >= self.config.max_missed_blocks_sequential and v.is_active:
@@ -493,16 +517,16 @@ class Blockchain:
                     logger.info(f"  ✅ Validator {v.address[:12]} added to active set")
                 state.set_validator(v)
 
-        # 6. Log new active set
+        # 7. Log new active set
         active_vals = [v for v in state.get_all_validators() if v.is_active]
         logger.info(f"New Active Set ({len(active_vals)}/{self.config.max_validators}):")
         for v in sorted(active_vals, key=lambda x: x.performance_score, reverse=True):
             logger.info(f"  - {v.address[:12]} | score={v.performance_score:.3f} | power={v.power}")
 
-        # 7. Increment epoch
+        # 8. Increment epoch
         state.epoch_index += 1
 
-        # 8. Start tracking for the new epoch
+        # 9. Start tracking for the new epoch
         self._start_epoch_tracking(state)
 
     # ========================================
@@ -591,10 +615,26 @@ class Blockchain:
     def _jail_validator(self, val: Validator, state: AccountState, current_height: int):
         """
         Jails a validator for missing too many blocks.
-        Applies penalty (slashing) and temporarily removes from active set.
+        Applies graduated penalty (slashing) based on jail count:
+        - 1st jail: 5% (base rate)
+        - 2nd jail: 10% (double)
+        - 3rd+ jail: 100% (ejection)
         """
+        # Phase 3: Graduated slashing based on jail count
+        base_rate = self.config.slashing_penalty_rate  # 0.05 (5%)
+
+        if val.jail_count == 0:
+            # First offense: base rate
+            penalty_rate = base_rate
+        elif val.jail_count == 1:
+            # Second offense: double
+            penalty_rate = base_rate * 2
+        else:
+            # Third+ offense: full slash (ejection)
+            penalty_rate = 1.0
+
         # Calculate penalty (% of stake)
-        penalty = int(val.power * self.config.slashing_penalty_rate)
+        penalty = int(val.power * penalty_rate)
 
         # Apply penalty
         val.power = max(0, val.power - penalty)

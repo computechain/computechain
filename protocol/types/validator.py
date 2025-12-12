@@ -1,5 +1,18 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
+
+class Delegation(BaseModel):
+    """Represents a delegation from a user to a validator."""
+    delegator: str          # Delegator's address (cpc...)
+    validator: str          # Validator's address (cpcvalcons...)
+    amount: int             # Delegated amount
+    created_height: int     # Block height when delegation was created
+
+class UnstakingEntry(BaseModel):
+    """Represents a pending unstake request."""
+    amount: int                    # Amount being unstaked
+    completion_height: int         # Block height when tokens become available
+    beneficiary: str              # Address to receive tokens (usually validator owner)
 
 class Validator(BaseModel):
     address: str      # Bech32 address (cpcvalcons...)
@@ -7,6 +20,11 @@ class Validator(BaseModel):
     power: int        # Voting power
     is_active: bool = True
     reward_address: Optional[str] = None # Address to receive rewards
+
+    # Metadata (human-readable info)
+    name: Optional[str] = None           # Validator name (e.g., "MyPool")
+    website: Optional[str] = None        # Website URL
+    description: Optional[str] = None    # Short description (max 256 chars)
 
     # Performance tracking (Phase 0: Validator Performance System)
     blocks_proposed: int = 0          # How many blocks created
@@ -24,6 +42,14 @@ class Validator(BaseModel):
     # Metadata
     joined_height: int = 0            # Block height when validator joined
     last_seen_height: int = 0         # Last block height when active
+
+    # Unstaking queue (timelock)
+    unstaking_queue: List[UnstakingEntry] = Field(default_factory=list)
+
+    # Delegation & Commission (Phase 2: Decentralization)
+    commission_rate: float = 0.10        # Commission rate (0.0 to 1.0, default 10%)
+    self_stake: int = 0                  # Validator's own stake
+    total_delegated: int = 0             # Total delegated by others
 
 class ValidatorSet(BaseModel):
     validators: List[Validator]
