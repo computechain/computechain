@@ -244,18 +244,20 @@
                     <thead>
                         <tr>
                             <th>Rank</th>
-                            <th>Address</th>
+                            <th>Name / Address</th>
                             <th>Status</th>
-                            <th>Performance Score</th>
+                            <th>Performance</th>
                             <th>Uptime</th>
                             <th>Power</th>
-                            <th>Blocks (Proposed/Expected)</th>
+                            <th>Delegated</th>
+                            <th>Commission</th>
+                            <th>Blocks</th>
                             <th>Missed</th>
                             <th>Jails</th>
                         </tr>
                     </thead>
                     <tbody id="leaderboardBody">
-                        <tr><td colspan="9" style="text-align:center;">Loading...</td></tr>
+                        <tr><td colspan="11" style="text-align:center;">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -353,10 +355,16 @@
 
                     const perfScore = (val.performance_score * 100).toFixed(1);
                     const uptimeScore = (val.uptime_score * 100).toFixed(1);
+                    const commission = ((val.commission_rate || 0.1) * 100).toFixed(0);
+                    const delegated = val.total_delegated || 0;
+                    const validatorName = val.name || formatAddress(val.address);
 
                     row.innerHTML = `
                         <td><strong>#${val.rank}</strong></td>
-                        <td><span class="addr-short">${formatAddress(val.address)}</span></td>
+                        <td>
+                            <strong>${validatorName}</strong><br/>
+                            <small class="addr-short">${formatAddress(val.address)}</small>
+                        </td>
                         <td>${statusBadge}</td>
                         <td>
                             <span class="score ${getScoreClass(val.performance_score)}">${perfScore}%</span>
@@ -366,7 +374,9 @@
                         </td>
                         <td>${uptimeScore}%</td>
                         <td>${val.power}</td>
-                        <td>${val.blocks_proposed} / ${val.blocks_expected}</td>
+                        <td>${delegated}</td>
+                        <td>${commission}%</td>
+                        <td>${val.blocks_proposed}/${val.blocks_expected}</td>
                         <td>${val.missed_blocks}</td>
                         <td>${val.jail_count}</td>
                     `;

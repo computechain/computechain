@@ -10,10 +10,14 @@ DECIMALS = 18
 
 # Base Gas Costs
 GAS_PER_TYPE = {
-    TxType.TRANSFER:      21_000,
-    TxType.STAKE:         40_000,
-    TxType.UNSTAKE:       40_000,
-    TxType.SUBMIT_RESULT: 80_000,
+    TxType.TRANSFER:         21_000,
+    TxType.STAKE:            40_000,
+    TxType.UNSTAKE:          40_000,
+    TxType.SUBMIT_RESULT:    80_000,
+    TxType.UPDATE_VALIDATOR: 30_000,   # Phase 1: Metadata update
+    TxType.DELEGATE:         35_000,   # Phase 2: Delegation
+    TxType.UNDELEGATE:       35_000,   # Phase 2: Undelegation
+    TxType.UNJAIL:           50_000,   # Phase 3: Unjail (expensive on purpose)
 }
 
 class NetworkConfig:
@@ -40,6 +44,13 @@ class NetworkConfig:
                  slashing_penalty_rate: float = 0.05,
                  ejection_threshold_jails: int = 3,
                  performance_lookback_epochs: int = 3,
+                 # Unstaking params
+                 unstaking_period_blocks: int = 100,
+                 # Unjail params (Phase 3)
+                 unjail_fee: int = 1000 * 10**18,  # 1000 CPC to unjail early
+                 # Delegation params (Phase 2)
+                 min_delegation: int = 100 * 10**18,  # 100 CPC minimum delegation
+                 max_commission_rate: float = 0.20,   # 20% max commission
                  # Devnet specific deterministic keys (hex strings)
                  faucet_priv_key: str = None):
         self.network_id = network_id
@@ -63,6 +74,12 @@ class NetworkConfig:
         self.slashing_penalty_rate = slashing_penalty_rate
         self.ejection_threshold_jails = ejection_threshold_jails
         self.performance_lookback_epochs = performance_lookback_epochs
+        self.unstaking_period_blocks = unstaking_period_blocks
+        # Unjail params
+        self.unjail_fee = unjail_fee
+        # Delegation params
+        self.min_delegation = min_delegation
+        self.max_commission_rate = max_commission_rate
         self.faucet_priv_key = faucet_priv_key
 
 NETWORKS: Dict[str, NetworkConfig] = {
