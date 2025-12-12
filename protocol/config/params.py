@@ -12,6 +12,7 @@ DECIMALS = 18
 GAS_PER_TYPE = {
     TxType.TRANSFER:      21_000,
     TxType.STAKE:         40_000,
+    TxType.UNSTAKE:       40_000,
     TxType.SUBMIT_RESULT: 80_000,
 }
 

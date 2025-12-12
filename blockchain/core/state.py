@@ -144,11 +144,17 @@ class AccountState:
 
         # We deduct exactly needed_fee (burned/collected), rest of tx.fee is ignored (savings)
         spent_fee = needed_fee
-        total_cost = tx.amount + spent_fee
-        
+
+        # For UNSTAKE, we only need fee (amount is withdrawn from validator stake)
+        # For other types, we need amount + fee
+        if tx.tx_type == TxType.UNSTAKE:
+            total_cost = spent_fee
+        else:
+            total_cost = tx.amount + spent_fee
+
         if sender.balance < total_cost:
             raise ValueError(f"Insufficient balance: have {sender.balance}, need {total_cost}")
-        
+
         # 3. Update sender
         sender.balance -= total_cost
         sender.nonce += 1
@@ -208,18 +214,65 @@ class AccountState:
                 # For now, MVP requires pub_key to identify validator.
                 raise ValueError("STAKE transaction must provide 'pub_key' in payload")
 
+        elif tx.tx_type == TxType.UNSTAKE:
+            # UNSTAKE: Withdraw stake from validator
+            # User must provide pub_key in payload to identify validator
+            pub_key_hex = tx.payload.get("pub_key")
+
+            if not pub_key_hex:
+                raise ValueError("UNSTAKE transaction must provide 'pub_key' in payload")
+
+            # Derive validator address from pub_key
+            val_pub_bytes = bytes.fromhex(pub_key_hex)
+            val_addr = address_from_pubkey(val_pub_bytes, prefix="cpcvalcons")
+
+            # Get validator
+            val = self.get_validator(val_addr)
+            if not val:
+                raise ValueError(f"Validator {val_addr} not found")
+
+            # Check if validator has enough stake
+            if val.power < tx.amount:
+                raise ValueError(f"Insufficient stake: validator has {val.power}, trying to unstake {tx.amount}")
+
+            # Apply slashing penalty if validator is jailed
+            penalty_amount = 0
+            if val.jailed_until_height > 0:
+                # Validator is jailed - apply penalty (e.g., 10% of unstake amount)
+                penalty_rate = 0.10  # 10% penalty for unstaking while jailed
+                penalty_amount = int(tx.amount * penalty_rate)
+
+            # Calculate actual amount to return (after penalty)
+            return_amount = tx.amount - penalty_amount
+
+            # Decrease validator power
+            val.power -= tx.amount
+
+            # Deactivate validator if power reaches zero
+            if val.power == 0:
+                val.is_active = False
+
+            self.set_validator(val)
+
+            # Return tokens to sender (minus penalty)
+            sender = self.get_account(tx.from_address)
+            sender.balance += return_amount
+            self.set_account(sender)
+
+            # Penalty is burned (not returned to anyone)
+
         elif tx.tx_type == TxType.SUBMIT_RESULT:
              # S4.3: Validate PoC Result structure
              try:
                  res = ComputeResult(**tx.payload)
                  if res.worker_address != tx.from_address:
                      raise ValueError(f"Worker address mismatch: payload {res.worker_address} vs tx {tx.from_address}")
-                 
+
                  # Here we would verify the Proof (ZK / Hash)
                  # For MVP, we accept it if structure is valid.
              except Exception as e:
                  raise ValueError(f"Invalid ComputeResult: {e}")
-            
+
         # 5. Handle Fees - implicitly burned or collected by block proposer later
         return True
 
