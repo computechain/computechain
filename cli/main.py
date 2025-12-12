@@ -218,6 +218,50 @@ def cmd_tx_stake(args):
     print(f"Staking {args.amount} {DENOM} from {from_addr}...")
     broadcast_tx(url, tx)
 
+def cmd_tx_unstake(args):
+    ks = KeyStore()
+    sender_key = ks.get_key(args.from_name)
+    if not sender_key:
+        print(f"Key '{args.from_name}' not found.")
+        sys.exit(1)
+
+    url = get_node_url(args)
+    from_addr = sender_key['address']
+    priv_key_bytes = bytes.fromhex(sender_key['private_key'])
+
+    # Get pubkey for validator identification
+    pub_key_hex = sender_key['public_key']
+
+    try:
+        nonce = get_nonce(url, from_addr)
+    except Exception as e:
+        print(e)
+        sys.exit(1)
+
+    amount_units = int(float(args.amount) * 10**DECIMALS)
+
+    # Calculate fee
+    fee = args.gas_limit * args.gas_price
+
+    tx = Transaction(
+        tx_type=TxType.UNSTAKE,
+        from_address=from_addr,
+        to_address=None,  # Unstake doesn't have a recipient
+        amount=amount_units,
+        fee=fee,
+        nonce=nonce,
+        gas_price=args.gas_price,
+        gas_limit=args.gas_limit,
+        timestamp=int(time.time()),
+        pub_key=pub_key_hex,
+        payload={"pub_key": pub_key_hex}  # Pass pubkey to identify validator
+    )
+
+    tx.sign(priv_key_bytes)
+
+    print(f"Unstaking {args.amount} {DENOM} from validator {from_addr}...")
+    broadcast_tx(url, tx)
+
 def cmd_tx_submit_result(args):
     ks = KeyStore()
     sender_key = ks.get_key(args.from_name)
@@ -320,6 +364,12 @@ def main():
     pt_stake.add_argument("--gas-price", type=int, default=1000, help="Gas price")
     pt_stake.add_argument("--gas-limit", type=int, default=100000, help="Gas limit")
 
+    pt_unstake = sp_tx.add_parser("unstake", help="Withdraw stake from validator")
+    pt_unstake.add_argument("amount", type=float, help="Amount to unstake in CPC")
+    pt_unstake.add_argument("--from", dest="from_name", required=True, help="Sender key name")
+    pt_unstake.add_argument("--gas-price", type=int, default=1000, help="Gas price")
+    pt_unstake.add_argument("--gas-limit", type=int, default=100000, help="Gas limit")
+
     pt_res = sp_tx.add_parser("submit-result", help="Submit PoC result")
     pt_res.add_argument("--task-id", required=True)
     pt_res.add_argument("--result-hash", required=True)
@@ -345,6 +395,7 @@ def main():
     elif args.command == "tx":
         if args.subcommand == "send": cmd_tx_send(args)
         elif args.subcommand == "stake": cmd_tx_stake(args)
+        elif args.subcommand == "unstake": cmd_tx_unstake(args)
         elif args.subcommand == "submit-result": cmd_tx_submit_result(args)
         else: p_tx.print_help()
         
