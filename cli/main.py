@@ -109,6 +109,56 @@ def cmd_query_validators(args):
     except Exception as e:
         print(f"Connection error: {e}")
 
+def cmd_query_delegations(args):
+    url = get_node_url(args)
+    try:
+        resp = requests.get(f"{url}/delegator/{args.address}/delegations")
+        if resp.status_code != 200:
+            print(f"Error: {resp.text}")
+            sys.exit(1)
+        data = resp.json()
+        delegations = data['delegations']
+
+        if not delegations:
+            print(f"No delegations found for {args.address}")
+            return
+
+        print(f"Delegator: {data['delegator']}")
+        print(f"Total Delegated: {data['total_delegated'] / 10**DECIMALS} {DENOM}")
+        print(f"\n{'Validator':<45} {'Amount':<15} {'Commission':<10} {'Name'}")
+        print("-" * 90)
+        for d in delegations:
+            amount_cpc = d['amount'] / 10**DECIMALS
+            commission_pct = d['validator_commission'] * 100
+            print(f"{d['validator']:<45} {amount_cpc:<15.6f} {commission_pct:<10.1f}% {d['validator_name']}")
+    except Exception as e:
+        print(f"Connection error: {e}")
+
+def cmd_query_rewards(args):
+    url = get_node_url(args)
+    try:
+        resp = requests.get(f"{url}/delegator/{args.address}/rewards")
+        if resp.status_code != 200:
+            print(f"Error: {resp.text}")
+            sys.exit(1)
+        data = resp.json()
+
+        print(f"Delegator: {data['delegator']}")
+        print(f"Current Epoch: {data['current_epoch']}")
+        print(f"Total Rewards: {data['total_rewards'] / 10**DECIMALS} {DENOM}")
+
+        rewards_by_epoch = data['rewards_by_epoch']
+        if rewards_by_epoch:
+            print(f"\n{'Epoch':<10} {'Reward Amount':<20}")
+            print("-" * 30)
+            for r in rewards_by_epoch:
+                reward_cpc = r['amount'] / 10**DECIMALS
+                print(f"{r['epoch']:<10} {reward_cpc:<20.6f}")
+        else:
+            print("\nNo rewards earned yet.")
+    except Exception as e:
+        print(f"Connection error: {e}")
+
 # --- Tx Commands ---
 def get_nonce(url, address):
     try:
@@ -519,6 +569,12 @@ def main():
 
     pq_vals = sp_query.add_parser("validators", help="Get active validators")
 
+    pq_deleg = sp_query.add_parser("delegations", help="Get delegations for address")
+    pq_deleg.add_argument("address", help="Delegator address")
+
+    pq_rewards = sp_query.add_parser("rewards", help="Get reward history for address")
+    pq_rewards.add_argument("address", help="Delegator address")
+
     # tx
     p_tx = subparsers.add_parser("tx", help="Create and send transactions")
     sp_tx = p_tx.add_subparsers(dest="subcommand")
@@ -590,6 +646,8 @@ def main():
         if args.subcommand == "balance": cmd_query_balance(args)
         elif args.subcommand == "block": cmd_query_block(args)
         elif args.subcommand == "validators": cmd_query_validators(args)
+        elif args.subcommand == "delegations": cmd_query_delegations(args)
+        elif args.subcommand == "rewards": cmd_query_rewards(args)
         else: p_query.print_help()
         
     elif args.command == "tx":

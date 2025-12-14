@@ -14,11 +14,11 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from blockchain.core.chain import Blockchain
-from blockchain.core.state import AccountState
-from protocol.types.tx import Transaction, TxType
-from protocol.crypto.keys import generate_private_key, public_key_from_private
-from protocol.crypto.addresses import address_from_pubkey
+from computechain.blockchain.core.chain import Blockchain
+from computechain.blockchain.core.state import AccountState
+from computechain.protocol.types.tx import Transaction, TxType
+from computechain.protocol.crypto.keys import generate_private_key, public_key_from_private
+from computechain.protocol.crypto.addresses import address_from_pubkey
 
 TEST_DB = "./test_e2e_db"
 

@@ -33,6 +33,7 @@ ENV/
 env.bak/
 venv.bak/
 
+
 # Testing & Linting
 .pytest_cache/
 .mypy_cache/
@@ -44,6 +45,7 @@ htmlcov/
 .computechain/
 .node_a/
 .node_b/
+TZ/
 *.db
 *.hex
 genesis.json

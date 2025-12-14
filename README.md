@@ -117,11 +117,14 @@ python3 -m cli.main tx unjail --from mykey
 ### Run Unit Tests
 
 ```bash
-# All tests (11 passing ✅)
-PYTHONPATH=. pytest blockchain/tests/test_core.py -v
+# All tests (24 passing ✅)
+./run_tests.sh
 
 # Specific test
-PYTHONPATH=. pytest blockchain/tests/test_core.py::test_delegate_undelegate_flow -v
+./run_tests.sh computechain/tests/test_core.py::test_delegate_undelegate_flow -v
+
+# Run specific test file
+./run_tests.sh computechain/tests/test_core.py -v
 ```
 
 ### Test Coverage
@@ -173,7 +176,7 @@ PYTHONPATH=. pytest blockchain/tests/test_core.py::test_delegate_undelegate_flow
 ## 🤝 Contributing
 
 Contributions are welcome! Please ensure:
-* All tests pass (`pytest blockchain/tests`)
+* All tests pass (`./run_tests.sh`)
 * Code follows existing style
 * Commit messages are descriptive
 

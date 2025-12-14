@@ -4,9 +4,11 @@ import time
 import requests
 import threading
 import json
+from pathlib import Path
 
 # Add project root to path
-sys.path.append(os.getcwd())
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 from computechain.protocol.types.tx import Transaction, TxType
 from computechain.protocol.crypto.keys import public_key_from_private

@@ -50,6 +50,7 @@ class Validator(BaseModel):
     commission_rate: float = 0.10        # Commission rate (0.0 to 1.0, default 10%)
     self_stake: int = 0                  # Validator's own stake
     total_delegated: int = 0             # Total delegated by others
+    delegations: List[Delegation] = Field(default_factory=list)  # Individual delegations
 
 class ValidatorSet(BaseModel):
     validators: List[Validator]

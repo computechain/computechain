@@ -55,13 +55,13 @@ pip install -r requirements.txt
 **Запуск юнит-тестов:**
 
 ```bash
-pytest blockchain/tests
+./run_tests.sh
 ```
 
 **Запуск E2E сценария:**
 
 ```bash
-python3 scripts/e2e_battle.py
+python3 tests/e2e_battle.py
 ```
 
 ---

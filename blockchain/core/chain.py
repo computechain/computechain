@@ -375,17 +375,58 @@ class Blockchain:
             # Validator gets commission
             acc.balance += commission_amount
 
-            # TODO: Distribute delegators_share proportionally to delegators
-            # For now, delegators_share is burned (not distributed)
-            # This will be implemented when we track individual delegations
+            # Distribute delegators_share proportionally to delegators
+            self._distribute_delegator_rewards(state, val, delegators_share, state.epoch_index)
 
-            logger.info(f"Distributed {commission_amount} (commission {val.commission_rate:.1%}) to validator {target_addr}, delegators_share {delegators_share} burned (pending delegation tracking)")
+            logger.info(f"Distributed {commission_amount} (commission {val.commission_rate:.1%}) to validator {target_addr}, {delegators_share} to delegators")
         else:
             # No delegations - validator gets everything
             acc.balance += total_reward
             # logger.info(f"Distributed {total_reward} (Reward: {block_reward}, Fees: {fees_total}) to {target_addr}")
 
         state.set_account(acc)
+
+    def _distribute_delegator_rewards(self, state: AccountState, validator: Validator, delegators_share: int, epoch: int):
+        """
+        Distributes delegators_share proportionally to all delegators.
+        Records rewards in each delegator's reward_history.
+
+        Args:
+            state: Current account state
+            validator: Validator whose delegators receive rewards
+            delegators_share: Total amount to distribute
+            epoch: Current epoch for reward tracking
+        """
+        if not validator.delegations:
+            logger.warning(f"Validator {validator.address} has total_delegated={validator.total_delegated} but no delegation records")
+            return
+
+        total_delegated = validator.total_delegated
+        if total_delegated == 0:
+            logger.warning(f"Validator {validator.address} has delegations but total_delegated=0")
+            return
+
+        # Distribute proportionally to each delegator
+        distributed_total = 0
+        for delegation in validator.delegations:
+            # Calculate proportional share
+            delegator_reward = (delegators_share * delegation.amount) // total_delegated
+
+            if delegator_reward > 0:
+                # Get delegator account and add reward
+                delegator_acc = state.get_account(delegation.delegator)
+                delegator_acc.balance += delegator_reward
+
+                # Track reward in history
+                if epoch not in delegator_acc.reward_history:
+                    delegator_acc.reward_history[epoch] = 0
+                delegator_acc.reward_history[epoch] += delegator_reward
+
+                state.set_account(delegator_acc)
+                distributed_total += delegator_reward
+
+        # Log distribution
+        logger.info(f"Distributed {distributed_total} to {len(validator.delegations)} delegators of validator {validator.address}")
 
     def compute_poc_root(self, txs: List[Transaction]) -> str:
         leaves = []

@@ -208,16 +208,76 @@
   - **Acceptance:** Workers authenticated, GPU verified
 
 - [ ] **Deterministic Verification**
-  - Random re-computation by validators (10% of results)
-  - Consensus on results (2/3+ validators agree)
-  - Result rejection if mismatch
+  - Challenge-response protocol (dynamic seed from block_hash)
+  - Server-side timing measurement
+  - Result hash verification
   - **Acceptance:** Invalid results rejected >99% of time
 
-#### 2A.2 Worker Stack (Minimal)
+#### 2A.2 Worker Qualification & Attestation ⭐ NEW
+- [ ] **Multi-Level GPU Attestation System**
+  - Level 1: Device info validation (NVML API)
+  - Level 2: Driver hash verification (whitelist of official NVIDIA drivers)
+  - Level 3: PCI device ID cross-check (NVML + lspci validation)
+  - Level 4: Challenge-response benchmark (dynamic seed, server-side timing)
+  - Level 5: Worker signature (crypto identity binding)
+  - **Acceptance:** 5-level attestation pipeline working
+
+- [ ] **Attestation Scoring (0-100 points)**
+  - Scoring engine: Level 1 (10pts) + L2 (20pts) + L3 (30pts) + L4 (30pts) + L5 (10pts)
+  - MIN_ATTESTATION_SCORE threshold (70 for mainnet, 60 for testnet)
+  - Attestation score stored per worker in DB
+  - **Acceptance:** Workers with score < threshold rejected
+
+- [ ] **GPU Eligibility Gate**
+  - VRAM >= 16 GB requirement (mainnet) / 12 GB (testnet)
+  - perf_score from benchmark (effective TFLOPS calculation)
+  - MIN_PERF_SCORE threshold (configurable)
+  - **Acceptance:** Only qualified GPUs (RTX 3090+, RTX 4080+) admitted
+
+- [ ] **Benchmark Protocol**
+  - BENCH_TASK message (matmul FP16, sizes 4096x4096x4096)
+  - Deterministic seed generation (from block_hash + worker_address)
+  - Server-side timing (orchestrator measures duration)
+  - Result hash verification (sha256 of output tensor)
+  - **Acceptance:** Benchmark completes in <30s, result verifiable
+
+- [ ] **Driver & Hardware Whitelists**
+  - NVIDIA driver hash whitelist (50+ official releases)
+  - GPU PCI device ID whitelist (RTX 3090, 4090, A100, H100, etc)
+  - Automatic whitelist updates from trusted source
+  - **Acceptance:** Whitelists loaded, updated weekly
+
+- [ ] **Security & Anti-Spoofing**
+  - Driver hash extraction (/usr/lib/libnvidia-ml.so, /sys/module/nvidia/version)
+  - PCI ID extraction (nvmlDeviceGetPciInfo + lspci cross-check)
+  - CPU emulation detection (duration > 10x expected = reject)
+  - **Acceptance:** Fake nvidia-smi gets score < 60
+
+- [ ] **Re-Benchmarking System**
+  - Periodic re-bench (every 7 days)
+  - Random spot-checks (5% probability on each task)
+  - Performance variance detection (> ±10% = suspicious)
+  - **Acceptance:** Re-bench updates scores, flags anomalies
+
+**Deliverables:**
+- ✅ Multi-level attestation working (5 levels)
+- ✅ Scoring system operational (0-100 points)
+- ✅ NVIDIA driver whitelist (50+ hashes)
+- ✅ GPU PCI ID whitelist (RTX 3090+, A100+)
+- ✅ Anti-spoofing: fake GPUs rejected (score < 60)
+- ✅ Benchmark protocol: server-side timing working
+
+**Success Metrics:**
+- Real RTX 4090 gets attestation_score >= 90
+- Fake nvidia-smi gets attestation_score < 60
+- CPU emulation rejected (duration > 10x)
+- 10+ workers pass attestation (score >= 70)
+
+#### 2A.3 Worker Stack (Minimal)
 - [ ] **GPU Fingerprinting**
   - Detect hardware (nvidia-smi)
   - Verify capabilities (CUDA compute level)
-  - Anti-spoofing (basic checks)
+  - Anti-spoofing (integrated with attestation system from 2A.2)
   - **Acceptance:** RTX 4090/5090 detected correctly
 
 - [ ] **Task Executor**
@@ -232,7 +292,7 @@
   - Retry logic on failure
   - **Acceptance:** Results submitted reliably
 
-#### 2A.3 Worker Reputation (Minimal)
+#### 2A.4 Worker Reputation (Minimal)
 - [ ] **Success Rate Tracking**
   - Track: results submitted / results verified
   - Track: uptime (tasks completed on time)
@@ -243,7 +303,7 @@
   - Ban after 3 incorrect results
   - **Acceptance:** Malicious workers ejected
 
-#### 2A.4 Use Case: Matrix Multiplication
+#### 2A.5 Use Case: Matrix Multiplication
 - [ ] **Implementation**
   - CUDA kernel for matrix multiplication
   - Deterministic output (same input → same output)
@@ -258,17 +318,23 @@
 
 **Deliverables:**
 - ✅ Working PoC with matrix multiplication
-- ✅ 10+ GPU workers online
+- ✅ 10+ GPU workers online (qualified via attestation)
+- ✅ Multi-level attestation system (5 levels, scoring 0-100)
+- ✅ NVIDIA driver & GPU PCI ID whitelists operational
+- ✅ Anti-spoofing: fake GPUs rejected (attestation_score < 60)
 - ✅ 1000+ successful verified computations
 - ✅ Verification system accurate (>99%)
 
 **Success Metrics:**
-- 10+ workers successfully completing tasks
+- 10+ workers successfully completing tasks (attestation_score >= 70)
+- Real RTX 4090 gets attestation_score >= 90
+- Fake nvidia-smi wrapper gets attestation_score < 60
+- CPU emulation rejected by server-side timing
 - 1000+ computations verified
 - <1% false positive rate on verification
 - <1% false negative rate on verification
 
-**Note:** NO marketplace yet (no bidding, escrow, disputes). Just prove verification works.
+**Note:** NO marketplace yet (no bidding, escrow, disputes). Focus: prove PoC verification + GPU attestation works.
 
 ---
 

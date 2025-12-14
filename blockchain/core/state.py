@@ -4,7 +4,7 @@ import threading
 from .accounts import Account
 from ...protocol.types.tx import Transaction
 from ...protocol.types.common import TxType
-from ...protocol.types.validator import Validator
+from ...protocol.types.validator import Validator, Delegation
 from ...protocol.types.poc import ComputeResult
 from ...protocol.crypto.hash import sha256, sha256_hex
 from ...protocol.crypto.addresses import address_from_pubkey
@@ -341,9 +341,27 @@ class AccountState:
             val.total_delegated += tx.amount
             val.power += tx.amount  # Delegated stake counts as voting power
 
-            # Create or update delegation record
-            # For now, we just update the totals
-            # TODO: Track individual delegations in validator.delegations list
+            # Track individual delegation
+            # Check if delegator already has delegation to this validator
+            existing_delegation = next(
+                (d for d in val.delegations if d.delegator == tx.from_address),
+                None
+            )
+
+            if existing_delegation:
+                # Update existing delegation
+                existing_delegation.amount += tx.amount
+            else:
+                # Create new delegation record
+                # Note: We need current block height. For now, use 0 as placeholder
+                # In production, pass current_height to apply_transaction
+                new_delegation = Delegation(
+                    delegator=tx.from_address,
+                    validator=validator_addr,
+                    amount=tx.amount,
+                    created_height=0  # TODO: Pass current block height
+                )
+                val.delegations.append(new_delegation)
 
             self.set_validator(val)
 
@@ -358,15 +376,32 @@ class AccountState:
             if not val:
                 raise ValueError(f"Validator {validator_addr} not found")
 
-            # Check if validator has enough delegated stake
-            if val.total_delegated < tx.amount:
-                raise ValueError(f"Insufficient delegated stake: validator has {val.total_delegated}, trying to undelegate {tx.amount}")
+            # Find delegator's delegation
+            delegator_delegation = next(
+                (d for d in val.delegations if d.delegator == tx.from_address),
+                None
+            )
 
-            # Update validator's delegated amount
+            if not delegator_delegation:
+                raise ValueError(f"No delegation found from {tx.from_address} to {validator_addr}")
+
+            # Check if delegator has enough delegated amount
+            if delegator_delegation.amount < tx.amount:
+                raise ValueError(f"Insufficient delegation: have {delegator_delegation.amount}, trying to undelegate {tx.amount}")
+
+            # Update delegation record
+            delegator_delegation.amount -= tx.amount
+
+            # Remove delegation if amount becomes zero
+            if delegator_delegation.amount == 0:
+                val.delegations.remove(delegator_delegation)
+
+            # Update validator's total delegated amount
             val.total_delegated -= tx.amount
             val.power -= tx.amount
 
             # Return tokens to delegator
+            # TODO: Implement unbonding period (21 days) in next step
             sender = self.get_account(tx.from_address)
             sender.balance += tx.amount
             self.set_account(sender)

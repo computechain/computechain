@@ -114,6 +114,57 @@ async def get_validator_performance(address: str):
         "last_seen_height": val.last_seen_height
     }
 
+@app.get("/delegator/{address}/delegations")
+async def get_delegator_delegations(address: str):
+    """Get all delegations for a specific delegator address."""
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+
+    # Get all validators and find delegations from this delegator
+    validators = chain.state.get_all_validators()
+    delegations = []
+
+    for val in validators:
+        for delegation in val.delegations:
+            if delegation.delegator == address:
+                delegations.append({
+                    "validator": delegation.validator,
+                    "amount": delegation.amount,
+                    "created_height": delegation.created_height,
+                    "validator_name": val.name or "Unknown",
+                    "validator_commission": val.commission_rate
+                })
+
+    return {
+        "delegator": address,
+        "delegations": delegations,
+        "total_delegated": sum(d["amount"] for d in delegations)
+    }
+
+@app.get("/delegator/{address}/rewards")
+async def get_delegator_rewards(address: str):
+    """Get reward history for a specific delegator address."""
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+
+    acc = chain.state.get_account(address)
+
+    # Calculate total rewards
+    total_rewards = sum(acc.reward_history.values())
+
+    # Convert reward_history to a sorted list for easier display
+    rewards_by_epoch = [
+        {"epoch": epoch, "amount": amount}
+        for epoch, amount in sorted(acc.reward_history.items())
+    ]
+
+    return {
+        "delegator": address,
+        "total_rewards": total_rewards,
+        "rewards_by_epoch": rewards_by_epoch,
+        "current_epoch": chain.state.epoch_index
+    }
+
 @app.get("/validators/leaderboard")
 async def get_validators_leaderboard():
     """Get validators sorted by performance score."""

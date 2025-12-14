@@ -515,7 +515,35 @@ def test_delegate_undelegate_flow(clean_chain):
     assert val.total_delegated == delegation_amount
     assert val.power == 100_000_000 + delegation_amount  # self_stake + delegated
 
-    # Undelegate 30 CPC
+    # Check individual delegation tracking
+    assert len(val.delegations) == 1
+    assert val.delegations[0].delegator == del_addr
+    assert val.delegations[0].validator == val_addr
+    assert val.delegations[0].amount == delegation_amount
+
+    # Test second delegation from same delegator (should update existing)
+    tx_delegate2 = Transaction(
+        tx_type=TxType.DELEGATE,
+        from_address=del_addr,
+        amount=25_000_000,
+        nonce=1,
+        gas_price=1000,
+        gas_limit=50000,
+        fee=35_000 * 1000,
+        timestamp=int(time.time()),
+        pub_key=del_pub.hex(),
+        payload={"validator": val_addr}
+    )
+    tx_delegate2.sign(del_priv)
+    state.apply_transaction(tx_delegate2)
+
+    # Check delegation updated (not created new)
+    val = state.get_validator(val_addr)
+    assert len(val.delegations) == 1  # Still only one delegation record
+    assert val.delegations[0].amount == delegation_amount + 25_000_000
+    assert val.total_delegated == delegation_amount + 25_000_000
+
+    # Undelegate 30 CPC (partial undelegation)
     undelegate_amount = 30_000_000
     balance_before = state.get_account(del_addr).balance
 
@@ -523,7 +551,7 @@ def test_delegate_undelegate_flow(clean_chain):
         tx_type=TxType.UNDELEGATE,
         from_address=del_addr,
         amount=undelegate_amount,
-        nonce=1,
+        nonce=2,  # Updated nonce after second delegation
         gas_price=1000,
         gas_limit=50000,
         fee=35_000 * 1000,
@@ -536,11 +564,200 @@ def test_delegate_undelegate_flow(clean_chain):
 
     # Check undelegation
     val = state.get_validator(val_addr)
-    assert val.total_delegated == delegation_amount - undelegate_amount
-    assert val.power == 100_000_000 + (delegation_amount - undelegate_amount)
+    expected_total = delegation_amount + 25_000_000 - undelegate_amount
+    assert val.total_delegated == expected_total
+    assert val.power == 100_000_000 + expected_total
+
+    # Check delegation record updated (not removed, because amount > 0)
+    assert len(val.delegations) == 1
+    assert val.delegations[0].amount == expected_total
 
     # Check delegator got tokens back
     assert state.get_account(del_addr).balance == balance_before - 35_000 * 1000 + undelegate_amount
+
+    # Undelegate remaining amount (should remove delegation record)
+    remaining_amount = expected_total
+    tx_undelegate_full = Transaction(
+        tx_type=TxType.UNDELEGATE,
+        from_address=del_addr,
+        amount=remaining_amount,
+        nonce=3,
+        gas_price=1000,
+        gas_limit=50000,
+        fee=35_000 * 1000,
+        timestamp=int(time.time()),
+        pub_key=del_pub.hex(),
+        payload={"validator": val_addr}
+    )
+    tx_undelegate_full.sign(del_priv)
+    state.apply_transaction(tx_undelegate_full)
+
+    # Check delegation record removed
+    val = state.get_validator(val_addr)
+    assert len(val.delegations) == 0  # Delegation record removed
+    assert val.total_delegated == 0
+    assert val.power == 100_000_000  # Only self-stake remains
+
+def test_reward_distribution_to_delegators(clean_chain):
+    """Test proportional reward distribution to delegators with commission."""
+    chain = clean_chain
+    state = chain.state
+
+    # Create validator
+    val_priv = generate_private_key()
+    val_pub = public_key_from_private(val_priv)
+    val_owner_addr = address_from_pubkey(val_pub)
+    val_addr = address_from_pubkey(val_pub, prefix="cpcvalcons")
+
+    # Setup validator account and stake
+    val_acc = state.get_account(val_owner_addr)
+    val_acc.balance = 200_000_000  # 200 tokens
+    state.set_account(val_acc)
+
+    tx_stake = Transaction(
+        tx_type=TxType.STAKE,
+        from_address=val_owner_addr,
+        to_address=None,
+        amount=100_000_000,  # 100 tokens self-stake
+        nonce=0,
+        gas_price=1000,
+        gas_limit=100000,
+        fee=40_000 * 1000,
+        timestamp=int(time.time()),
+        pub_key=val_pub.hex(),
+        payload={"pub_key": val_pub.hex()}
+    )
+    tx_stake.sign(val_priv)
+    state.apply_transaction(tx_stake)
+
+    # Create two delegators
+    del1_priv = generate_private_key()
+    del1_pub = public_key_from_private(del1_priv)
+    del1_addr = address_from_pubkey(del1_pub)
+
+    del2_priv = generate_private_key()
+    del2_pub = public_key_from_private(del2_priv)
+    del2_addr = address_from_pubkey(del2_pub)
+
+    # Setup delegator accounts
+    del1_acc = state.get_account(del1_addr)
+    del1_acc.balance = 100_000_000  # 100 tokens
+    state.set_account(del1_acc)
+
+    del2_acc = state.get_account(del2_addr)
+    del2_acc.balance = 100_000_000  # 100 tokens
+    state.set_account(del2_acc)
+
+    # Delegator 1 delegates 60 tokens
+    tx_del1 = Transaction(
+        tx_type=TxType.DELEGATE,
+        from_address=del1_addr,
+        to_address=None,
+        amount=60_000_000,  # 60 tokens
+        nonce=0,
+        gas_price=1000,
+        gas_limit=100000,
+        fee=35_000 * 1000,
+        timestamp=int(time.time()),
+        pub_key=del1_pub.hex(),
+        payload={"validator": val_addr}
+    )
+    tx_del1.sign(del1_priv)
+    state.apply_transaction(tx_del1)
+
+    # Delegator 2 delegates 40 tokens
+    tx_del2 = Transaction(
+        tx_type=TxType.DELEGATE,
+        from_address=del2_addr,
+        to_address=None,
+        amount=40_000_000,  # 40 tokens
+        nonce=0,
+        gas_price=1000,
+        gas_limit=100000,
+        fee=35_000 * 1000,
+        timestamp=int(time.time()),
+        pub_key=del2_pub.hex(),
+        payload={"validator": val_addr}
+    )
+    tx_del2.sign(del2_priv)
+    state.apply_transaction(tx_del2)
+
+    # Verify delegation setup
+    val = state.get_validator(val_addr)
+    assert val.total_delegated == 100_000_000  # 60 + 40
+    assert len(val.delegations) == 2
+
+    # Activate validator (normally done during epoch transition)
+    val.is_active = True
+    state.set_validator(val)
+
+    # Record initial balances
+    val_acc_before = state.get_account(val_owner_addr)
+    del1_acc_before = state.get_account(del1_addr)
+    del2_acc_before = state.get_account(del2_addr)
+
+    initial_val_balance = val_acc_before.balance
+    initial_del1_balance = del1_acc_before.balance
+    initial_del2_balance = del2_acc_before.balance
+
+    # Create a block with the validator as proposer
+    from computechain.protocol.types.block import Block, BlockHeader
+
+    block = Block(
+        header=BlockHeader(
+            height=1,
+            timestamp=int(time.time()),
+            prev_hash="0" * 64,
+            chain_id="computechain-test",
+            proposer_address=val_addr,
+            tx_root="0" * 64,
+            state_root="0" * 64,
+            compute_root="0" * 64
+        ),
+        txs=[]
+    )
+
+    # Distribute rewards (this should trigger _distribute_delegator_rewards)
+    chain._distribute_rewards(block, state)
+
+    # Get updated accounts
+    val_acc_after = state.get_account(val_owner_addr)
+    del1_acc_after = state.get_account(del1_addr)
+    del2_acc_after = state.get_account(del2_addr)
+
+    # Calculate expected rewards
+    from computechain.blockchain.core.rewards import calculate_block_reward
+    total_reward = calculate_block_reward(1)  # Height 1
+    commission_rate = val.commission_rate  # Should be 0.10 (10%)
+    commission_amount = int(total_reward * commission_rate)
+    delegators_share = total_reward - commission_amount
+
+    # Expected delegator rewards (proportional to delegation)
+    # Delegator 1: 60% of delegators_share
+    # Delegator 2: 40% of delegators_share
+    expected_del1_reward = (delegators_share * 60_000_000) // 100_000_000
+    expected_del2_reward = (delegators_share * 40_000_000) // 100_000_000
+
+    # Verify validator got commission
+    assert val_acc_after.balance == initial_val_balance + commission_amount
+
+    # Verify delegators got their proportional share
+    assert del1_acc_after.balance == initial_del1_balance + expected_del1_reward
+    assert del2_acc_after.balance == initial_del2_balance + expected_del2_reward
+
+    # Verify reward_history is tracked
+    assert 0 in del1_acc_after.reward_history  # Epoch 0
+    assert del1_acc_after.reward_history[0] == expected_del1_reward
+    assert 0 in del2_acc_after.reward_history  # Epoch 0
+    assert del2_acc_after.reward_history[0] == expected_del2_reward
+
+    # Verify total distributed equals total reward (commission + delegators_share)
+    total_distributed = (
+        (val_acc_after.balance - initial_val_balance) +
+        (del1_acc_after.balance - initial_del1_balance) +
+        (del2_acc_after.balance - initial_del2_balance)
+    )
+    assert total_distributed == total_reward
 
 def test_unjail_transaction(clean_chain):
     """Test UNJAIL transaction."""
