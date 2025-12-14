@@ -2,16 +2,29 @@
 
 ## 🎯 Overview
 
-ComputeChain now includes a comprehensive Validator Performance & Slashing System (Phase 0) that automatically monitors validator uptime, jails inactive validators, and ensures only active validators participate in block production.
+ComputeChain includes a comprehensive Validator Performance & Slashing System with advanced features:
+- **Phase 0**: Performance tracking, jailing, and slashing
+- **Phase 1**: Validator metadata (name, website, description, commission)
+- **Phase 2**: Delegation support with commission-based rewards
+- **Phase 3**: Graduated slashing and early unjail mechanism
+
+This guide covers all validator features from performance monitoring to delegation management.
 
 ## ✨ Key Features
 
-### 1. **Performance Tracking**
+### 1. **Validator Metadata** (Phase 1)
+- Set human-readable name for your validator
+- Add website URL and description
+- Configure commission rate (0-20%, default 10%)
+- Visible in dashboard and API
+
+### 2. **Performance Tracking** (Phase 0)
 - Tracks blocks proposed vs expected for each validator
 - Monitors consecutive missed blocks
 - Records last seen activity
+- Minimum uptime requirement: 75%
 
-### 2. **Performance Scoring**
+### 3. **Performance Scoring**
 Formula:
 ```
 performance_score =
@@ -20,27 +33,56 @@ performance_score =
   20% × (1 - penalty_ratio)
 ```
 
-### 3. **Jail & Slashing**
-- **Jail Trigger**: Missing 10+ consecutive blocks
-- **Penalty**: 5% of stake slashed per jail
-- **Jail Duration**: 100 blocks
-- **Ejection**: After 3 jails, validator is permanently ejected with full slash
+### 4. **Graduated Slashing** (Phase 3)
+- **1st Jail**: 5% stake slashed (base rate)
+- **2nd Jail**: 10% stake slashed (double penalty)
+- **3rd+ Jail**: 100% stake slashed (permanent ejection)
+- Progressive penalties discourage repeated violations
 
-### 4. **Smart Epoch Transitions**
+### 5. **Delegation System** (Phase 2)
+- Users can delegate tokens to validators
+- Validators earn commission from block rewards
+- Commission distributed automatically
+- Delegators can undelegate at any time
+
+### 6. **Early Unjail** (Phase 3)
+- Pay 1000 CPC fee to exit jail immediately
+- Automatically reactivates validator
+- Resets missed blocks counter
+
+### 7. **Smart Epoch Transitions**
 - Active validators selected by performance_score (not just stake)
 - Inactive validators automatically removed
 - New validators can join if they have sufficient stake and performance
 
 ## 🚀 Quick Start
 
-### 1. Start Your Node
+### 1. Create and Configure Your Validator
+
+```bash
+# Create key
+python3 -m cli.main keys add myvalidator
+
+# Stake to become validator
+python3 -m cli.main tx stake 1000 --from myvalidator
+
+# Update validator metadata
+python3 -m cli.main tx update-validator \
+  --name "MyAwesomePool" \
+  --website "https://mypool.com" \
+  --description "High-performance validator" \
+  --commission 0.12 \
+  --from myvalidator
+```
+
+### 2. Start Your Node
 
 ```bash
 ./run_node.py --datadir .node_a init
 ./run_node.py --datadir .node_a start
 ```
 
-### 2. Open Dashboard
+### 3. Open Dashboard
 
 Open your browser and navigate to:
 ```
@@ -53,7 +95,24 @@ You'll see:
 - Jailed validators (if any)
 - Real-time updates every 10 seconds
 
-### 3. Monitor Validators via API
+### 4. Enable Delegation (Optional)
+
+If you want to accept delegations, ensure your commission is set:
+
+```bash
+python3 -m cli.main tx update-validator --commission 0.10 --from myvalidator
+```
+
+Delegators can now delegate to your validator:
+```bash
+# Delegator delegates 500 CPC
+python3 -m cli.main tx delegate cpcvalcons1your... 500 --from delegator
+
+# Delegator undelegates 200 CPC
+python3 -m cli.main tx undelegate cpcvalcons1your... 200 --from delegator
+```
+
+### 5. Monitor Validators via API
 
 Query validator performance:
 ```bash
@@ -73,11 +132,14 @@ The web dashboard shows:
 
 ### Validator Leaderboard
 - **Rank**: Position by performance score
-- **Address**: Validator consensus address
+- **Name / Address**: Validator name (if set) or abbreviated address
 - **Status**: Active / Inactive / Jailed
 - **Performance Score**: 0-100% (color-coded)
 - **Uptime**: Blocks proposed / expected
-- **Power**: Current stake
+- **Power**: Current stake (self + delegated)
+- **Delegated**: Total tokens delegated by others
+- **Commission**: Validator commission rate %
+- **Blocks**: Proposed / Expected
 - **Missed Blocks**: Consecutive misses
 - **Jail Count**: Times jailed
 
@@ -89,7 +151,23 @@ The web dashboard shows:
 
 ## 🧪 Testing the System
 
-### Scenario 1: Test Missed Blocks Detection
+### Scenario 1: Test Metadata Updates
+
+1. Create validator and stake
+2. Update metadata with name and commission
+3. Check dashboard - name should appear
+4. Verify via API: `curl http://localhost:8000/validators/leaderboard`
+
+### Scenario 2: Test Delegation
+
+1. Create delegator account with balance
+2. Delegate tokens to validator
+3. Check validator's `total_delegated` increased
+4. Check validator's `power` = self_stake + delegated
+5. Undelegate some tokens
+6. Verify tokens returned to delegator
+
+### Scenario 3: Test Missed Blocks Detection
 
 1. Start 2 nodes (Node A and Node B)
 2. Stake 4 validators total
@@ -97,7 +175,7 @@ The web dashboard shows:
 4. Wait for epoch transition (10 blocks)
 5. **Expected Result**: Offline validators get marked with missed_blocks
 
-### Scenario 2: Test Jailing
+### Scenario 4: Test Jailing
 
 1. Start nodes with multiple validators
 2. Stop one node completely
@@ -105,7 +183,21 @@ The web dashboard shows:
 4. **Expected Result**: Validator gets jailed, slashed 5%, removed from active set
 5. Check dashboard to see jailed validator
 
-### Scenario 3: Test Ejection
+### Scenario 5: Test Graduated Slashing
+
+1. Jail validator first time - 5% penalty
+2. Unjail and jail again - 10% penalty (double)
+3. Jail third time - 100% penalty (ejection)
+4. Verify progressive penalties applied
+
+### Scenario 6: Test Unjail Transaction
+
+1. Get validator jailed
+2. Send UNJAIL transaction with 1000 CPC fee
+3. **Expected Result**: Validator immediately unjailed and reactivated
+4. Verify via dashboard
+
+### Scenario 7: Test Ejection
 
 1. Let a validator get jailed 3 times
 2. **Expected Result**: After 3rd jail, validator is permanently ejected, stake fully slashed
@@ -116,12 +208,31 @@ Edit `protocol/config/params.py` to customize:
 
 ```python
 # In NetworkConfig.__init__:
-min_uptime_score=0.75,              # Minimum uptime for active set
+# Performance & Slashing
+min_uptime_score=0.75,              # Minimum uptime for active set (75%)
 max_missed_blocks_sequential=10,    # Missed blocks before jail
-jail_duration_blocks=100,           # Jail duration
-slashing_penalty_rate=0.05,         # 5% slash per jail
+jail_duration_blocks=100,           # Jail duration in blocks
+slashing_penalty_rate=0.05,         # Base slashing rate (5%)
 ejection_threshold_jails=3,         # Jails before permanent ejection
+
+# Delegation
+min_delegation=100 * 10**18,        # Minimum delegation amount (100 CPC)
+max_commission_rate=0.20,           # Maximum commission rate (20%)
+
+# Unjail
+unjail_fee=1000 * 10**18,          # Fee to unjail early (1000 CPC)
 ```
+
+## 📋 Transaction Types & Gas Costs
+
+| Transaction | Gas Cost | Additional Fee | Description |
+|------------|----------|----------------|-------------|
+| STAKE | 40,000 | - | Become validator or add stake |
+| UNSTAKE | 40,000 | -10% if jailed | Withdraw stake |
+| UPDATE_VALIDATOR | 30,000 | - | Update name, website, description, commission |
+| DELEGATE | 35,000 | - | Delegate tokens to validator |
+| UNDELEGATE | 35,000 | - | Undelegate tokens from validator |
+| UNJAIL | 50,000 | +1000 CPC | Request early jail release |
 
 ## 📡 API Endpoints
 
@@ -129,10 +240,17 @@ ejection_threshold_jails=3,         # Jails before permanent ejection
 Returns blockchain status including epoch
 
 ### GET /validators
-Returns all validators with full stats
+Returns all validators with full stats including metadata
 
 ### GET /validators/leaderboard
-Returns validators sorted by performance_score
+Returns validators sorted by performance_score with rank
+
+Response includes:
+- `name`: Validator name (if set)
+- `commission_rate`: Commission percentage
+- `total_delegated`: Total tokens delegated
+- `power`: Total voting power (self + delegated)
+- All performance metrics
 
 ### GET /validator/{address}
 Returns detailed validator info
@@ -141,7 +259,7 @@ Returns detailed validator info
 Returns performance-specific stats
 
 ### GET /validators/jailed
-Returns currently jailed validators
+Returns currently jailed validators with blocks remaining
 
 ## 🔍 Monitoring Tips
 
@@ -196,14 +314,27 @@ New Active Set (2/5):
 4. **Backup Strategy**: Have failover nodes ready
 5. **Alert on Jails**: Set up monitoring for jail events
 
+## ✅ Implemented Features
+
+- [x] Performance tracking and scoring
+- [x] Automated jailing and slashing
+- [x] Validator metadata (name, website, description)
+- [x] Delegation support (DELEGATE/UNDELEGATE)
+- [x] Commission-based reward distribution
+- [x] Unjail transaction (early release with 1000 CPC fee)
+- [x] Graduated slashing (5% → 10% → 100%)
+- [x] Min uptime score filter (75%)
+- [x] Real-time web dashboard
+
 ## 🔮 Future Enhancements
 
+- [ ] Individual delegation tracking (proportional rewards)
+- [ ] Unbonding period for undelegations
 - [ ] Email/Telegram alerts for jail events
 - [ ] Historical performance charts
 - [ ] Validator reputation score
-- [ ] Delegation support
-- [ ] Unjail transaction (early release with fee)
-- [ ] Graduated slashing based on severity
+- [ ] Export dashboard data to CSV
+- [ ] Validator self-unjail after jail duration expires
 
 ## 📚 References
 

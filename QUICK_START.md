@@ -157,11 +157,39 @@ firefox http://localhost:8000/
 
 ---
 
+## 🔧 Новые возможности CLI (Phase 1-3)
+
+### Обновить метаданные валидатора
+```bash
+python3 -m cli.main tx update-validator \
+  --name "MyPool" \
+  --website "https://mypool.com" \
+  --description "Best validator in ComputeChain" \
+  --commission 0.12 \
+  --from alice
+```
+
+### Делегировать токены
+```bash
+# Делегировать 500 CPC валидатору
+python3 -m cli.main tx delegate cpcvalcons1abc... 500 --from bob
+
+# Отозвать 200 CPC
+python3 -m cli.main tx undelegate cpcvalcons1abc... 200 --from bob
+```
+
+### Досрочно выйти из jail (1000 CPC fee)
+```bash
+python3 -m cli.main tx unjail --from alice
+```
+
+---
+
 ## 📚 Дальше
 
 - **Детальное тестирование**: `TEST_GUIDE.md`
 - **Описание системы**: `VALIDATOR_PERFORMANCE_GUIDE.md`
-- **Архитектура**: `DEV_PLAN.md` (Phase 0)
+- **Changelog**: `CHANGELOG_SINCE_RESTRUCTURE.md` - Все изменения с момента реструктуризации
 
 ---
 
