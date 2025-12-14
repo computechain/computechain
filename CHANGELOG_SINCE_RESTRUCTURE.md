@@ -6,15 +6,13 @@
 
 ## 📅 Обзор периода
 
-**Даты**: 28 ноября - 12 декабря 2025 (и текущие незакоммиченные изменения)
+**Даты**: 28 ноября - 12 декабря 2025
 **Базовый коммит**: `c463935` - Restructure: flatten repository structure, update README
-**Последний коммит**: `ec55f7d` - feat: comprehensive validator system improvements (Phase 1-3)
-**Незакоммиченные изменения**: Documentation cleanup + E2E testing
+**Текущий коммит**: `ec55f7d` - feat: comprehensive validator system improvements (Phase 1-3)
 **Всего коммитов**: 4 крупных релиза
-**Изменено файлов (коммиты)**: 8 основных файлов
-**Изменено файлов (текущие)**: +12 файлов (документация, тесты, cleanup)
-**Добавлено строк**: ~807 (коммиты) + ~1361 (текущие) = **~2168 строк**
-**Удалено строк**: ~28 (коммиты) + ~5438 (текущие) = **~5466 строк**
+**Изменено файлов**: 8 основных файлов
+**Добавлено строк**: ~807
+**Удалено строк**: ~28
 
 ---
 
@@ -37,238 +35,6 @@
 ---
 
 ## 📝 Детальный Changelog
-
-### [In Progress] Documentation Cleanup & E2E Testing (Post-ec55f7d)
-
-**Статус**: Незакоммиченные изменения
-**Дата**: 12 декабря 2025 (после коммита `ec55f7d`)
-
-#### Цель
-
-Подготовка документации к переносу в отдельный docs-проект и добавление E2E тестов для новых фич.
-
----
-
-#### Изменения в документации
-
-**1. README.md - Значительное расширение (+ 145 строк)**
-
-**Что добавлено:**
-- Расширенное описание ключевых фич:
-  - ✅ Validator Performance Tracking с jailing и slashing
-  - ✅ Staking System (STAKE, UNSTAKE с штрафами)
-  - ✅ Delegation Support с комиссиями
-  - ✅ Graduated Slashing (5% → 10% → 100%)
-  - ✅ Minimum Uptime Requirement (75%)
-  - ✅ Early Unjail механизм
-  - ✅ Real-time Dashboard
-
-- Секция "Documentation":
-  ```markdown
-  * QUICK_START.md - Quick start guide
-  * VALIDATOR_PERFORMANCE_GUIDE.md - Comprehensive validator guide
-  * TEST_GUIDE.md - Testing and E2E scenarios
-  * CHANGELOG_SINCE_RESTRUCTURE.md - Detailed changelog
-  ```
-
-- Расширенная структура проекта с описаниями:
-  ```
-  blockchain/      # L1 node (consensus, state, networking, RPC API)
-  protocol/types/  # Transaction types, validator models, blocks
-  protocol/crypto/ # ECDSA signatures, PQ-ready architecture
-  cli/main.py      # Commands: keys, query, tx (stake, delegate, etc.)
-  tests/           # Unit tests (11 tests, all passing ✅)
-  ```
-
-- Quick Start секция с примерами:
-  ```bash
-  ./run_node.py --datadir .node_a init
-  ./run_node.py --datadir .node_a start
-  open http://localhost:8000/
-  ```
-
-- Comprehensive CLI Examples:
-  ```bash
-  # Staking
-  python3 -m cli.main tx stake 1000 --from validator1
-  python3 -m cli.main tx unstake 500 --from validator1
-
-  # Delegation
-  python3 -m cli.main tx delegate cpcvalcons1... 500 --from delegator
-  python3 -m cli.main tx undelegate cpcvalcons1... 200 --from delegator
-
-  # Validator metadata
-  python3 -m cli.main tx update-validator \
-    --name "MyPool" \
-    --website "https://pool.com" \
-    --commission 0.15 \
-    --from validator1
-
-  # Unjail
-  python3 -m cli.main tx unjail --from validator1
-  ```
-
-**Результат**: README теперь полностью отражает текущее состояние проекта со всеми Phase 1-3 фичами.
-
----
-
-**2. QUICK_START.md - Обновления (+30 строк)**
-
-**Изменения:**
-- Добавлены примеры новых CLI команд
-- Обновлены инструкции запуска
-- Добавлены ссылки на VALIDATOR_PERFORMANCE_GUIDE.md
-
----
-
-**3. VALIDATOR_PERFORMANCE_GUIDE.md - Расширение (+183 строки)**
-
-**Добавлено:**
-- Документация по Phase 1-3 фичам
-- Примеры использования UPDATE_VALIDATOR, DELEGATE, UNJAIL
-- Описание graduated slashing
-- Минимальный uptime requirement (75%)
-- Commission-based rewards
-- Расширенные примеры CLI команд
-
----
-
-#### Cleanup старой документации
-
-**Удалено (5303 строки!):**
-
-**Файлы в корне:**
-- `DEVELOPMENT_LOG.md` (181 строка) - автоматически генерируемый лог
-- `blockchain/tests/README.md` (26 строк) - устаревший тестовый README
-
-**Директория docs/ полностью удалена:**
-- `docs/ComputeChain_MVP_Guide.md` (890 строк)
-- `docs/ComputeChain_Security_Audit.md` (822 строки)
-- `docs/ComputeChain_Technical_Specification.md` (929 строк)
-- `docs/ComputeChain_Whitepaper.md` (544 строки)
-- `docs/For_Granny.md` (472 строки)
-- `docs/GPU_Security_Research.md` (1397 строк)
-- `docs/Tokenomics_CPC.md` (пустой файл)
-
-**Причина удаления:**
-Вся детальная документация переносится в отдельный docs-проект. В основном репозитории остаются только практические гайды (QUICK_START, VALIDATOR_PERFORMANCE_GUIDE, TEST_GUIDE).
-
----
-
-#### Новые тесты
-
-**1. E2E Test: tests/test_new_features_e2e.py (294 строки)**
-
-**Цель:** End-to-end тестирование новых валидаторских фич (Phase 1-3)
-
-**Что тестируется:**
-```python
-# Test scenarios:
-1. Validator metadata updates (UPDATE_VALIDATOR)
-2. Delegation flow (DELEGATE)
-3. Undelegation flow (UNDELEGATE)
-4. Unjail transaction (UNJAIL)
-5. Graduated slashing (5% → 10% → 100%)
-6. Min uptime filter (75%)
-7. Commission-based rewards
-```
-
-**Структура теста:**
-- Setup: создание тестового блокчейна
-- Validator creation с начальным стейком
-- UPDATE_VALIDATOR: проверка метаданных
-- DELEGATE/UNDELEGATE: проверка балансов и power
-- Jailing и UNJAIL: проверка fee и освобождения
-- Graduated slashing: проверка прогрессивных штрафов
-- Cleanup: удаление тестовой БД
-
-**Запуск:**
-```bash
-python3 tests/test_new_features_e2e.py
-```
-
----
-
-#### Создан CHANGELOG
-
-**CHANGELOG_SINCE_RESTRUCTURE.md (709 строк)**
-
-Этот файл! Содержит подробное описание всех изменений с 28 ноября по 12 декабря 2025:
-- 4 коммита детально описаны
-- Все новые фичи документированы
-- Статистика изменений
-- Roadmap для будущих улучшений
-- Технический долг и инсайты
-
-**Цель:** Предоставить полную информацию для переноса в docs-проект.
-
----
-
-#### Статистика изменений
-
-**Всего изменено:**
-```
- DEVELOPMENT_LOG.md                           |  181 ----
- QUICK_START.md                               |   30 +-
- README.md                                    |  145 ++-
- VALIDATOR_PERFORMANCE_GUIDE.md               |  183 +++-
- blockchain/tests/README.md                   |   26 -
- docs/* (7 файлов)                            | 5053 --------
- tests/test_new_features_e2e.py               |  294 ++++++
- CHANGELOG_SINCE_RESTRUCTURE.md               |  709 ++++++
-
-12 файлов изменено, 1361 вставок(+), 5438 удалений(-)
-```
-
-**Баланс:**
-- Добавлено: ~1361 строка (README, VALIDATOR_GUIDE, E2E test, CHANGELOG)
-- Удалено: ~5438 строк (старая документация)
-- Чистый результат: -4077 строк (cleanup)
-
----
-
-#### Подготовка к коммиту
-
-**Следующие файлы готовы к коммиту:**
-```bash
-# Modified
-M  QUICK_START.md
-M  README.md
-M  VALIDATOR_PERFORMANCE_GUIDE.md
-
-# Deleted
-D  DEVELOPMENT_LOG.md
-D  blockchain/tests/README.md
-D  docs/ComputeChain_MVP_Guide.md
-D  docs/ComputeChain_Security_Audit.md
-D  docs/ComputeChain_Technical_Specification.md
-D  docs/ComputeChain_Whitepaper.md
-D  docs/For_Granny.md
-D  docs/GPU_Security_Research.md
-D  docs/Tokenomics_CPC.md
-
-# Added
-A  CHANGELOG_SINCE_RESTRUCTURE.md
-A  tests/test_new_features_e2e.py
-```
-
-**Предлагаемое commit message:**
-```
-docs: comprehensive documentation cleanup and E2E testing
-
-- Update README.md with all Phase 1-3 features
-- Expand VALIDATOR_PERFORMANCE_GUIDE.md with new commands
-- Update QUICK_START.md with latest examples
-- Remove old docs/ directory (moved to separate docs project)
-- Add E2E test for validator features (294 lines)
-- Create CHANGELOG_SINCE_RESTRUCTURE.md (709 lines)
-- Remove obsolete DEVELOPMENT_LOG.md and blockchain/tests/README.md
-
-This prepares the repository for production with clean, focused
-documentation and comprehensive test coverage.
-```
-
----
 
 ### [2025-12-12] Коммит `ec55f7d` - Comprehensive Validator System (Phase 1-3)
 
@@ -815,16 +581,14 @@ performance_lookback_epochs=3,      # 3 epochs
 
 **Testing:**
 - 11 unit тестов (100% passing)
-- 1 E2E тест (294 строки, tests/test_new_features_e2e.py)
 - Coverage: все новые транзакции
 - Edge cases: penalties, jailing, delegation
 
 **Documentation:**
-- README.md обновлен и расширен (+145 строк)
-- QUICK_START.md с новыми командами (+30 строк)
-- VALIDATOR_PERFORMANCE_GUIDE.md полностью актуализирован (+183 строки)
-- CHANGELOG_SINCE_RESTRUCTURE.md создан (этот файл, ~950 строк)
-- Старая документация удалена (docs/, -5303 строки)
+- README.md обновлен
+- QUICK_START.md с новыми командами
+- VALIDATOR_PERFORMANCE_GUIDE.md полностью актуализирован
+- Этот CHANGELOG для документации всех изменений
 
 **Code Style:**
 - Все новые функции документированы
@@ -894,33 +658,23 @@ performance_lookback_epochs=3,      # 3 epochs
 ## 📚 Документация
 
 ### Обновленные файлы:
-- `README.md` - основной README с новыми фичами (+145 строк)
+- `README.md` - основной README с новыми фичами
 - `README_ru.md` - русская версия (если есть)
-- `QUICK_START.md` - быстрый старт с новыми CLI командами (+30 строк)
-- `VALIDATOR_PERFORMANCE_GUIDE.md` - полное руководство валидатора (+183 строки)
+- `QUICK_START.md` - быстрый старт с новыми CLI командами
+- `VALIDATOR_PERFORMANCE_GUIDE.md` - полное руководство валидатора
 - `TEST_GUIDE.md` - гайд по тестированию
-
-### Созданные файлы:
-- `CHANGELOG_SINCE_RESTRUCTURE.md` - этот файл (~950 строк) - полное описание всех изменений с 28 ноября
-- `tests/test_new_features_e2e.py` - E2E тест (294 строки)
+- `CHANGELOG_SINCE_RESTRUCTURE.md` - этот файл
 
 ### Удаленные файлы:
-- `docs/*` - вся старая документация (5053 строки, перенесена в отдельный docs-проект):
-  - `ComputeChain_MVP_Guide.md`
-  - `ComputeChain_Security_Audit.md`
-  - `ComputeChain_Technical_Specification.md`
-  - `ComputeChain_Whitepaper.md`
-  - `For_Granny.md`
-  - `GPU_Security_Research.md`
-  - `Tokenomics_CPC.md`
-- `DEVELOPMENT_LOG.md` - автоматически созданный лог (181 строка)
-- `blockchain/tests/README.md` - устаревший тестовый README (26 строк)
+- `docs/*` - вся старая документация (будет в отдельном проекте)
+- `DEV_PLAN.md` - устаревший план разработки
+- `DEVELOPMENT_LOG.md` - автоматически созданный лог
 
 ---
 
 ## 🎯 Итоги
 
-**Период разработки:** 28 ноября - 12 декабря 2025 (14 дней) + текущие изменения
+**Период разработки:** 28 ноября - 12 декабря 2025 (14 дней)
 
 **Достигнуто:**
 - ✅ Полноценная валидаторская система с performance tracking
@@ -928,24 +682,20 @@ performance_lookback_epochs=3,      # 3 epochs
 - ✅ Graduated slashing для повышения качества валидаторов
 - ✅ Web dashboard для мониторинга
 - ✅ Comprehensive CLI с 6 новыми командами
-- ✅ 11 unit тестов + E2E тест покрывают все новые функции
-- ✅ Актуальная документация (README, QUICK_START, VALIDATOR_GUIDE)
-- ✅ CHANGELOG для переноса в docs-проект
-- ✅ Cleanup старой документации (-5303 строки)
+- ✅ 11 тестов покрывают все новые функции
+- ✅ Актуальная документация
 
 **Качество кода:**
-- 100% тестов проходит (11 unit + 1 E2E)
+- 100% тестов проходит
 - Все функции документированы
 - Clean architecture
 - Extensible design
-- Comprehensive E2E testing
 
 **Готовность к продакшну:**
 - ✅ Core функционал стабилен
-- ✅ Tests passing (unit + E2E)
-- ✅ Документация актуальна и готова к переносу
+- ✅ Tests passing
 - ⚠️ Некоторые фичи в TODO (delegation rewards distribution)
-- ✅ Codebase cleanup завершен
+- ✅ Документация актуальна
 
 ---
 
@@ -956,3 +706,4 @@ performance_lookback_epochs=3,      # 3 epochs
 ---
 
 *Этот changelog является частью документации проекта ComputeChain и предназначен для интеграции в отдельный docs проект.*
+ы
