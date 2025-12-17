@@ -19,9 +19,13 @@ class AccountState:
         self._accounts: Dict[str, Account] = accounts if accounts is not None else {}
         # Cache for validators: address -> Validator
         self._validators: Dict[str, Validator] = validators if validators is not None else {}
-        
+
         # Epoch info (in memory for now, should be persisted)
         self.epoch_index = 0
+
+        # Economic tracking (Phase 1.2 - Economic Model)
+        self.total_burned: int = 0      # Total tokens burned (slashing, penalties, dust)
+        self.total_minted: int = 0      # Total tokens minted (block rewards)
 
     def clone(self) -> 'AccountState':
         """Creates a copy of the state (for simulation)."""
@@ -30,6 +34,8 @@ class AccountState:
         new_validators = {k: v.model_copy() for k, v in self._validators.items()}
         cloned = AccountState(self.db, new_accounts, new_validators)
         cloned.epoch_index = self.epoch_index
+        cloned.total_burned = self.total_burned
+        cloned.total_minted = self.total_minted
         return cloned
 
     def get_account(self, address: str) -> Account:
@@ -565,6 +571,62 @@ class AccountState:
             new_level.append(sha256(leaves[i] + leaves[i+1]))
             
         return self._compute_merkle_root_from_leaves(new_level)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Economic Tracking (Phase 1.2 - Economic Model)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def burn_tokens(self, amount: int, reason: str = ""):
+        """
+        Burn tokens (destroy them permanently).
+
+        Called when:
+        - Slashing (validator/miner penalties)
+        - Unjail fees
+        - Unstake penalties (when jailed)
+        - Dust from reward distribution
+
+        Args:
+            amount: Amount to burn (in minimal units)
+            reason: Reason for burn (for logging)
+        """
+        if amount <= 0:
+            return
+
+        self.total_burned += amount
+        # Tokens are destroyed - not transferred to any account
+
+    def mint_tokens(self, amount: int, reason: str = "block_reward"):
+        """
+        Mint new tokens (create them).
+
+        Called when:
+        - Block rewards are distributed
+
+        Args:
+            amount: Amount to mint (in minimal units)
+            reason: Reason for minting (for logging)
+        """
+        if amount <= 0:
+            return
+
+        self.total_minted += amount
+        # Tokens are created - will be distributed to validators/miners
+
+    def get_total_supply(self, genesis_supply: int) -> int:
+        """
+        Calculate current total supply.
+
+        Formula:
+            total_supply = genesis + minted - burned
+
+        Args:
+            genesis_supply: Initial supply from genesis
+
+        Returns:
+            Current total token supply
+        """
+        return genesis_supply + self.total_minted - self.total_burned
 
     @staticmethod
     def empty(db: StorageDB) -> 'AccountState':

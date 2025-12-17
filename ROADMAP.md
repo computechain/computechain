@@ -1,7 +1,7 @@
 # ComputeChain - General Roadmap (Revised)
 
-> **Last Updated:** December 14, 2025
-> **Status:** Draft v2 (Revised based on technical review)
+> **Last Updated:** December 17, 2025
+> **Status:** Draft v5 (Phase 1.2 Economic Model completed)
 > **Timeline:** ~12 months to Mainnet Launch (approximate)
 
 ---
@@ -101,11 +101,35 @@
   - All 24 unit tests passing ✅
 
 #### 1.2 Economic Model Hardening ⭐ CRITICAL
-- [ ] **Unbonding period**
-  - 21-day unbonding period (configurable via governance later)
-  - Unbonding queue implementation
-  - `CLAIM_UNBONDED` transaction type
-  - **Acceptance:** Tokens locked for 21 days, claimable after
+- [x] **Unbonding period** ✅ **COMPLETED (Dec 17, 2025)**
+  - 21-day unbonding period (100 blocks devnet / 181440 blocks mainnet) ✅
+  - Unbonding queue implementation (`UndelegationEntry` model) ✅
+  - Automatic token return via `process_unbonding_queue()` ✅
+  - API: `/delegator/{address}/unbonding` ✅
+  - CLI: `query unbonding <address>` ✅
+  - **Acceptance:** Tokens locked for unbonding period, auto-returned ✅
+  - **Implementation:** `protocol/types/validator.py`, `blockchain/core/accounts.py`, `blockchain/core/state.py`, `blockchain/core/chain.py`, `blockchain/rpc/api.py`, `cli/main.py`
+  - **Tests:** `test_unbonding_period`, `test_delegate_undelegate_flow` - 25 tests passing ✅
+
+- [x] **Economic Model v2.0** ✅ **COMPLETED (Dec 17, 2025)**
+  - Single source of truth: `protocol/config/economic_model.py` ✅
+  - Block reward distribution: 70% validators, 30% miners ✅
+  - Transaction fees: 90% validator, 10% treasury ✅
+  - Burn mechanisms: slashing, penalties, dust ✅
+  - Mint tracking: block rewards ✅
+  - Treasury account: hardcoded address for community pool ✅
+  - Miner weight system (ZK-based verification, off-chain calculation) ✅
+  - **Acceptance:** All economic parameters centralized, burn/mint tracked ✅
+  - **Implementation:**
+    - `protocol/config/economic_model.py` - DEVNET/TESTNET/MAINNET configs
+    - `miner/weight/` - calculator, ZK prover, signer (off-chain)
+    - `blockchain/core/zk_verification.py` - on-chain ZK proof verification
+    - `blockchain/core/miner_rewards.py` - miner reward distribution
+    - `blockchain/core/state.py` - burn/mint tracking, treasury support
+    - `blockchain/core/chain.py` - integrated reward distribution
+    - `blockchain/core/rewards.py` - uses ECONOMIC_CONFIG
+  - **Architecture:** Off-chain weight calculation with ZK proof, on-chain verification only
+  - **Ready for:** Phase 2A PoC implementation (miner pool ready)
 
 - [ ] **Economic invariants testing**
   - Total supply conservation (no inflation bugs)
@@ -846,12 +870,12 @@ These are the HIGHEST priority items identified by technical review:
    - [ ] Fast sync from snapshot
    - [ ] Test: sync from snapshot <5 min
 
-5. **Unbonding Queue** ⏳ **PENDING**
-   - [ ] Add `unbonding_queue: List[UnbondingEntry]`
-   - [ ] Process queue every block
-   - [ ] `CLAIM_UNBONDED` transaction
-   - [ ] Test: 21-day unbonding enforced
-   - **Note:** Model already has `UnbondingEntry` defined in `protocol/types/validator.py:11`
+5. **Unbonding Queue** ✅ **COMPLETED (Dec 17, 2025)**
+   - [x] Add `unbonding_delegations: List[UndelegationEntry]` to Account ✅
+   - [x] Process queue every block via `process_unbonding_queue()` ✅
+   - [x] Automatic token return (no manual claim needed) ✅
+   - [x] Test: unbonding period enforced ✅
+   - **Implementation:** `UndelegationEntry` model in `protocol/types/validator.py`
 
 6. **Load Test Harness** ⏳ **PENDING**
    - [ ] Transaction generator script
@@ -947,6 +971,8 @@ These are the HIGHEST priority items identified by technical review:
 **v1 (Dec 14, 2025):** Initial roadmap
 **v2 (Dec 14, 2025):** Revised based on technical review feedback
 **v3 (Dec 17, 2025):** Updated with Phase 1.1 completion status
+**v4 (Dec 17, 2025):** Updated with Phase 1.2 unbonding period completion
+**v5 (Dec 17, 2025):** Updated with Phase 1.2 Economic Model v2.0 completion
 
 **Key Changes in v2:**
 - Split Phase 2 into 2A (PoC Core) and 2B (Marketplace)
@@ -969,6 +995,39 @@ These are the HIGHEST priority items identified by technical review:
   - Added `min_delegation` validation (100 CPC enforced)
   - All 24 unit tests passing
 - ⏳ **Phase 1.2 Unbonding Period** - Next priority
+- ⏳ **Phase 1.3 Infrastructure** - Prometheus, state snapshots pending
+
+**Key Changes in v4:**
+- ✅ **Phase 1.2 Unbonding Period COMPLETED** (Dec 17, 2025)
+  - Unbonding queue implementation with `UndelegationEntry` model
+  - 21-day lock period (100 blocks devnet / 181440 blocks mainnet)
+  - Automatic token return via `process_unbonding_queue()` on each block
+  - API endpoint: `/delegator/{address}/unbonding` with completion info
+  - CLI command: `query unbonding <address>`
+  - Security: prevents fast exit attacks during network instability
+  - All 25 unit tests passing
+- ⏳ **Phase 1.2 Economic Invariants Testing** - Next priority
+- ⏳ **Phase 1.3 Infrastructure** - Prometheus, state snapshots pending
+
+**Key Changes in v5:**
+- ✅ **Phase 1.2 Economic Model v2.0 COMPLETED** (Dec 17, 2025)
+  - **Single source of truth:** All economic parameters in `protocol/config/economic_model.py`
+  - **Block rewards:** 10 CPC → 70% validators (7 CPC), 30% miners (3 CPC)
+  - **Fee distribution:** 90% validator, 10% treasury
+  - **Burn tracking:** Slashing, penalties, dust → tracked in `state.total_burned`
+  - **Mint tracking:** Block rewards → tracked in `state.total_minted`
+  - **Treasury account:** Hardcoded address for community pool
+  - **Miner weight system:** ZK-based (off-chain calculation, on-chain verification)
+    - `miner/weight/calculator.py` - Weight formula (results * gpu_tier * uptime * difficulty * reputation)
+    - `miner/weight/prover.py` - ZK proof generation (STUB, ready for real ZK)
+    - `miner/weight/signer.py` - Cryptographic signing
+    - `blockchain/core/zk_verification.py` - On-chain ZK proof verification
+    - `blockchain/core/miner_rewards.py` - Miner reward distribution logic
+  - **Architecture decision:** Economic logic in blockchain, NOT scattered across codebase
+  - **Burn policy:** Only when truly needed (undistributed dust, penalties)
+  - **Ready for Phase 2A:** Miner pool infrastructure complete, awaiting PoC implementation
+- ⏳ **Phase 1.2 Economic Invariants Testing** - Next priority
+- ⏳ **Phase 1.2 Staking Limits** - Max validator power cap, delegation limits
 - ⏳ **Phase 1.3 Infrastructure** - Prometheus, state snapshots pending
 
 ---

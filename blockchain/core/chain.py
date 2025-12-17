@@ -330,66 +330,115 @@ class Blockchain:
 
     def _distribute_rewards(self, block: Block, state: AccountState):
         """
-        Distributes block reward and transaction fees to the proposer.
+        Distributes block reward and transaction fees according to economic model.
+
+        Economic Model (Phase 1.2):
+        - Block reward: split 70% validators, 30% miners (from ECONOMIC_CONFIG)
+        - Transaction fees: 90% validator, 10% treasury
+        - Dust from integer division: burned
+        - Minting/burning tracked in state
         """
+        from protocol.config.economic_model import ECONOMIC_CONFIG, TREASURY_ADDRESS
+
         proposer_addr = block.header.proposer_address
         val = state.get_validator(proposer_addr)
-        
+
         if not val or not val.is_active:
-            # Should generally not happen if block was validated against expected proposer
-            # But if they got slashed/ejected in same block? Unlikely for now.
             return
 
-        # Use reward address if set, otherwise validator address (which is 'cpcvalcons...', tricky?)
-        # Validator address is NOT an account address usually (cpc vs cpcvalcons).
-        # So if reward_address is None, where do we send? 
-        # For MVP, we must have reward_address or fail, OR derive cpc address from cpcvalcons if they share pubkey?
-        # In State.apply_transaction STAKE logic, we set reward_address = sender (cpc...).
-        
+        # Determine validator reward address
         target_addr = val.reward_address
         if not target_addr:
-             # Fallback: Try to derive 'cpc' address from 'cpcvalcons' address?
-             # But we don't have the pubkey handy here easily unless we look at val.pq_pub_key
-             # Let's try to use val.pq_pub_key to derive account address
-             try:
-                 target_addr = address_from_pubkey(bytes.fromhex(val.pq_pub_key), prefix=self.config.bech32_prefix_acc)
-             except:
-                 logger.warning(f"Could not determine reward address for {proposer_addr}")
-                 return
+            try:
+                target_addr = address_from_pubkey(bytes.fromhex(val.pq_pub_key), prefix=self.config.bech32_prefix_acc)
+            except:
+                logger.warning(f"Could not determine reward address for {proposer_addr}")
+                return
 
-        acc = state.get_account(target_addr)
-
-        # Calculate total reward
+        # ═══════════════════════════════════════════════════════════════
+        # 1. Calculate block reward and split into pools
+        # ═══════════════════════════════════════════════════════════════
         block_reward = calculate_block_reward(block.header.height)
 
+        # Mint new tokens (block reward)
+        state.mint_tokens(block_reward, reason="block_reward")
+
+        # Split reward into validator and miner pools
+        reward_split = ECONOMIC_CONFIG.distribute_block_reward(block_reward)
+        validator_pool = reward_split['validator_pool']
+        miner_pool = reward_split['miner_pool']
+
+        # ═══════════════════════════════════════════════════════════════
+        # 2. Calculate and distribute transaction fees
+        # ═══════════════════════════════════════════════════════════════
         fees_total = 0
         for tx in block.txs:
             base_gas = GAS_PER_TYPE.get(tx.tx_type, 0)
             fees_total += base_gas * tx.gas_price
 
-        total_reward = block_reward + fees_total
+        # Split fees
+        fee_split = ECONOMIC_CONFIG.distribute_fees(fees_total)
+        validator_fee_share = fee_split['validator_share']
+        treasury_fee_share = fee_split['treasury']
+        fee_dust = fee_split['dust']
 
-        # Phase 2: Commission-based distribution
+        # Send fees to treasury
+        if treasury_fee_share > 0:
+            treasury_acc = state.get_account(TREASURY_ADDRESS)
+            treasury_acc.balance += treasury_fee_share
+            state.set_account(treasury_acc)
+
+        # Burn fee dust if any
+        if fee_dust > 0:
+            state.burn_tokens(fee_dust, reason="fee_dust")
+
+        # ═══════════════════════════════════════════════════════════════
+        # 3. Distribute validator pool to block producer
+        # ═══════════════════════════════════════════════════════════════
+        validator_total_reward = validator_pool + validator_fee_share
+
+        acc = state.get_account(target_addr)
+
         if val.total_delegated > 0:
             # Validator has delegations - apply commission
-            commission_amount = int(total_reward * val.commission_rate)
-            delegators_share = total_reward - commission_amount
+            commission_amount = int(validator_total_reward * val.commission_rate)
+            delegators_share = validator_total_reward - commission_amount
 
             # Validator gets commission
             acc.balance += commission_amount
 
-            # Distribute delegators_share proportionally to delegators
-            self._distribute_delegator_rewards(state, val, delegators_share, state.epoch_index)
+            # Distribute to delegators (handles dust burning internally)
+            dust = self._distribute_delegator_rewards(state, val, delegators_share, state.epoch_index)
+            if dust > 0:
+                state.burn_tokens(dust, reason="delegator_reward_dust")
 
-            logger.info(f"Distributed {commission_amount} (commission {val.commission_rate:.1%}) to validator {target_addr}, {delegators_share} to delegators")
+            logger.info(
+                f"Block {block.header.height}: Validator {target_addr[:12]}... "
+                f"commission={commission_amount}, delegators={delegators_share-dust}, "
+                f"dust_burned={dust}"
+            )
         else:
             # No delegations - validator gets everything
-            acc.balance += total_reward
-            # logger.info(f"Distributed {total_reward} (Reward: {block_reward}, Fees: {fees_total}) to {target_addr}")
+            acc.balance += validator_total_reward
 
         state.set_account(acc)
 
-    def _distribute_delegator_rewards(self, state: AccountState, validator: Validator, delegators_share: int, epoch: int):
+        # ═══════════════════════════════════════════════════════════════
+        # 4. Distribute miner pool (TODO: Phase 2A - PoC implementation)
+        # ═══════════════════════════════════════════════════════════════
+        # For now, if no miners in block → burn miner pool
+        # In Phase 2A, this will call miner_reward_distributor.distribute_miner_rewards()
+        if miner_pool > 0:
+            # TODO: Extract miner submissions from block txs
+            # miner_submissions = self._extract_miner_submissions(block)
+            # distributed, dust = miner_reward_distributor.distribute_miner_rewards(miner_pool, miner_submissions, state)
+            # state.burn_tokens(dust, reason="miner_reward_dust")
+
+            # STUB: Burn miner pool until Phase 2A
+            state.burn_tokens(miner_pool, reason="miner_pool_unused")
+            logger.debug(f"Miner pool {miner_pool} burned (no PoC workers yet)")
+
+    def _distribute_delegator_rewards(self, state: AccountState, validator: Validator, delegators_share: int, epoch: int) -> int:
         """
         Distributes delegators_share proportionally to all delegators.
         Records rewards in each delegator's reward_history.
@@ -399,15 +448,18 @@ class Blockchain:
             validator: Validator whose delegators receive rewards
             delegators_share: Total amount to distribute
             epoch: Current epoch for reward tracking
+
+        Returns:
+            dust: Undistributed remainder from integer division (to be burned)
         """
         if not validator.delegations:
             logger.warning(f"Validator {validator.address} has total_delegated={validator.total_delegated} but no delegation records")
-            return
+            return delegators_share  # All becomes dust
 
         total_delegated = validator.total_delegated
         if total_delegated == 0:
             logger.warning(f"Validator {validator.address} has delegations but total_delegated=0")
-            return
+            return delegators_share  # All becomes dust
 
         # Distribute proportionally to each delegator
         distributed_total = 0
@@ -428,8 +480,16 @@ class Blockchain:
                 state.set_account(delegator_acc)
                 distributed_total += delegator_reward
 
+        # Calculate dust (remainder from integer division)
+        dust = delegators_share - distributed_total
+
         # Log distribution
-        logger.info(f"Distributed {distributed_total} to {len(validator.delegations)} delegators of validator {validator.address}")
+        logger.debug(
+            f"Distributed {distributed_total} to {len(validator.delegations)} delegators "
+            f"of validator {validator.address}, dust={dust}"
+        )
+
+        return dust
 
     def compute_poc_root(self, txs: List[Transaction]) -> str:
         leaves = []
