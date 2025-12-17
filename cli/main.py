@@ -185,6 +185,77 @@ def cmd_query_unbonding(args):
     except Exception as e:
         print(f"Connection error: {e}")
 
+# --- Snapshot Commands (Phase 1.3) ---
+def cmd_snapshot_list(args):
+    """List available snapshots."""
+    url = get_node_url(args)
+    try:
+        resp = requests.get(f"{url}/snapshots")
+        if resp.status_code != 200:
+            print(f"Error: {resp.text}")
+            sys.exit(1)
+
+        snapshots = resp.json()
+        if snapshots:
+            print(f"Available snapshots ({len(snapshots)} total):")
+            print()
+            for snap in snapshots:
+                size_mb = snap['compressed_size'] / (1024 * 1024)
+                compression = (1 - snap['compressed_size'] / snap['uncompressed_size']) * 100
+                print(f"  Height: {snap['height']}")
+                print(f"  Network: {snap['network_id']}")
+                print(f"  Epoch: {snap['epoch_index']}")
+                print(f"  Accounts: {snap['accounts_count']}")
+                print(f"  Validators: {snap['validators_count']}")
+                print(f"  Total Supply: {snap['total_supply'] / 10**DECIMALS:,.2f} {DENOM}")
+                print(f"  Size: {size_mb:.2f} MB (compressed {compression:.1f}%)")
+                print(f"  Hash: {snap['hash'][:16]}...")
+                print(f"  Time: {snap['timestamp']}")
+                print()
+        else:
+            print("No snapshots available")
+    except Exception as e:
+        print(f"Connection error: {e}")
+
+def cmd_snapshot_info(args):
+    """Show detailed snapshot information."""
+    url = get_node_url(args)
+    try:
+        resp = requests.get(f"{url}/snapshots/{args.height}")
+        if resp.status_code == 404:
+            print(f"Snapshot at height {args.height} not found")
+            sys.exit(1)
+        elif resp.status_code != 200:
+            print(f"Error: {resp.text}")
+            sys.exit(1)
+
+        snap = resp.json()
+        size_mb = snap['compressed_size'] / (1024 * 1024)
+        size_uncompressed_mb = snap['uncompressed_size'] / (1024 * 1024)
+        compression = (1 - snap['compressed_size'] / snap['uncompressed_size']) * 100
+
+        print(f"Snapshot at height {snap['height']}:")
+        print()
+        print(f"  Version: {snap['version']}")
+        print(f"  Network: {snap['network_id']}")
+        print(f"  Epoch: {snap['epoch_index']}")
+        print(f"  Timestamp: {snap['timestamp']}")
+        print()
+        print(f"  Accounts: {snap['accounts_count']}")
+        print(f"  Validators: {snap['validators_count']}")
+        print()
+        print(f"  Total Supply: {snap['total_supply'] / 10**DECIMALS:,.2f} {DENOM}")
+        print(f"  Total Minted: {snap['total_minted'] / 10**DECIMALS:,.2f} {DENOM}")
+        print(f"  Total Burned: {snap['total_burned'] / 10**DECIMALS:,.2f} {DENOM}")
+        print()
+        print(f"  Compressed Size: {size_mb:.2f} MB")
+        print(f"  Uncompressed Size: {size_uncompressed_mb:.2f} MB")
+        print(f"  Compression: {compression:.1f}%")
+        print()
+        print(f"  Hash: {snap['hash']}")
+    except Exception as e:
+        print(f"Connection error: {e}")
+
 # --- Tx Commands ---
 def get_nonce(url, address):
     try:
@@ -604,6 +675,15 @@ def main():
     pq_unbonding = sp_query.add_parser("unbonding", help="Get unbonding delegations for address")
     pq_unbonding.add_argument("address", help="Delegator address")
 
+    # snapshot (Phase 1.3)
+    p_snapshot = subparsers.add_parser("snapshot", help="Manage state snapshots")
+    sp_snapshot = p_snapshot.add_subparsers(dest="subcommand")
+
+    ps_list = sp_snapshot.add_parser("list", help="List available snapshots")
+
+    ps_info = sp_snapshot.add_parser("info", help="Show snapshot details")
+    ps_info.add_argument("height", type=int, help="Snapshot height")
+
     # tx
     p_tx = subparsers.add_parser("tx", help="Create and send transactions")
     sp_tx = p_tx.add_subparsers(dest="subcommand")
@@ -679,7 +759,12 @@ def main():
         elif args.subcommand == "rewards": cmd_query_rewards(args)
         elif args.subcommand == "unbonding": cmd_query_unbonding(args)
         else: p_query.print_help()
-        
+
+    elif args.command == "snapshot":
+        if args.subcommand == "list": cmd_snapshot_list(args)
+        elif args.subcommand == "info": cmd_snapshot_info(args)
+        else: p_snapshot.print_help()
+
     elif args.command == "tx":
         if args.subcommand == "send": cmd_tx_send(args)
         elif args.subcommand == "stake": cmd_tx_stake(args)

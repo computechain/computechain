@@ -93,13 +93,26 @@ class AccountState:
             self.db.set_state(f"acc:{addr}", acc.model_dump_json())
         for addr, val in self._validators.items():
             self.db.set_state(f"val:{addr}", val.model_dump_json())
-        
+
         self.db.set_state("epoch_index", str(self.epoch_index))
+
+        # Persist economic tracking (Phase 1.2)
+        self.db.set_state("total_burned", str(self.total_burned))
+        self.db.set_state("total_minted", str(self.total_minted))
 
     def load_epoch_info(self):
         val = self.db.get_state("epoch_index")
         if val:
             self.epoch_index = int(val)
+
+        # Load economic tracking (Phase 1.2)
+        burned = self.db.get_state("total_burned")
+        if burned:
+            self.total_burned = int(burned)
+
+        minted = self.db.get_state("total_minted")
+        if minted:
+            self.total_minted = int(minted)
 
     def apply_transaction(self, tx: Transaction, current_height: Optional[int] = None) -> bool:
         """

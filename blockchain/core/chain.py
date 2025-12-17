@@ -26,19 +26,30 @@ from ..consensus.engine import ConsensusEngine
 logger = logging.getLogger(__name__)
 
 class Blockchain:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, enable_snapshots: bool = True, snapshot_interval: int = 1000):
         self.db = StorageDB(db_path)
         self._lock = threading.RLock()
         self.state = AccountState(self.db)
         self.state.load_epoch_info()
         self.config = CURRENT_NETWORK
-        
+
         # Try to load genesis allocation if chain is empty
         self.genesis_path = os.path.join(os.path.dirname(db_path), "genesis.json")
-        
+
         # Initialize Consensus Engine
         self.consensus = ConsensusEngine()
-        
+
+        # Initialize Snapshot Manager (Phase 1.3)
+        self.enable_snapshots = enable_snapshots
+        self.snapshot_interval = snapshot_interval  # Create snapshot every N blocks
+        if enable_snapshots:
+            from ..snapshot import SnapshotManager
+            snapshots_dir = os.path.join(os.path.dirname(db_path), "snapshots")
+            self.snapshot_manager = SnapshotManager(snapshots_dir)
+            logger.info(f"Snapshot system enabled (interval: {snapshot_interval} blocks)")
+        else:
+            self.snapshot_manager = None
+
         self.last_block_timestamp = 0
         self._load_chain_state()
 
@@ -50,7 +61,7 @@ class Blockchain:
             last_blk = self.get_block(self.height)
             if last_blk:
                 self.last_block_timestamp = last_blk.header.timestamp
-            
+
             logger.info(f"Chain initialized at height {self.height}")
             self._update_consensus_from_state()
         else:
@@ -60,6 +71,93 @@ class Blockchain:
             logger.info("Chain initialized empty (waiting for genesis)")
             self._apply_genesis_allocation()
             self._apply_genesis_validators()
+
+    def load_from_snapshot(self, snapshot_height: int) -> bool:
+        """
+        Load blockchain state from a snapshot (Phase 1.3 - Fast Sync).
+
+        This allows a new node to quickly sync by loading a snapshot
+        and then syncing only the remaining blocks.
+
+        Args:
+            snapshot_height: Height of snapshot to load
+
+        Returns:
+            True if successful, False otherwise
+
+        Raises:
+            FileNotFoundError: If snapshot doesn't exist
+            ValueError: If snapshot verification fails
+        """
+        if not self.snapshot_manager:
+            raise RuntimeError("Snapshot system not enabled")
+
+        logger.info(f"Loading blockchain state from snapshot at height {snapshot_height}...")
+
+        # Load snapshot
+        snapshot = self.snapshot_manager.load_snapshot(snapshot_height)
+
+        # Verify snapshot is for correct network
+        if snapshot.network_id != self.config.network_id:
+            raise ValueError(
+                f"Snapshot network mismatch: expected {self.config.network_id}, "
+                f"got {snapshot.network_id}"
+            )
+
+        # Apply snapshot to state
+        self.snapshot_manager.apply_snapshot(snapshot, self.state)
+
+        # Update chain height from snapshot
+        # We need to find the block at snapshot height to set last_hash
+        snapshot_block = self.get_block(snapshot_height)
+        if snapshot_block:
+            self.height = snapshot_height
+            self.last_hash = snapshot_block.hash()
+            self.last_block_timestamp = snapshot_block.header.timestamp
+        else:
+            # If block doesn't exist in DB, we still set height but with placeholder hash
+            # The node will need to sync blocks from snapshot_height onwards
+            self.height = snapshot_height
+            self.last_hash = "0" * 64  # Placeholder
+            self.last_block_timestamp = 0
+            logger.warning(
+                f"Snapshot loaded but block {snapshot_height} not in DB. "
+                f"You may need to sync blocks from a peer."
+            )
+
+        # Update consensus with validator set from snapshot
+        self._update_consensus_from_state()
+
+        logger.info(
+            f"Fast sync complete! Chain state loaded from snapshot at height {snapshot_height}"
+        )
+        return True
+
+    def fast_sync_from_latest_snapshot(self) -> bool:
+        """
+        Fast sync from the most recent available snapshot.
+
+        Returns:
+            True if successful, False if no snapshots available
+        """
+        if not self.snapshot_manager:
+            logger.warning("Snapshot system not enabled, skipping fast sync")
+            return False
+
+        latest_height = self.snapshot_manager.get_latest_snapshot_height()
+
+        if latest_height is None:
+            logger.info("No snapshots available for fast sync")
+            return False
+
+        logger.info(f"Found snapshot at height {latest_height}, initiating fast sync...")
+
+        try:
+            self.load_from_snapshot(latest_height)
+            return True
+        except Exception as e:
+            logger.error(f"Fast sync failed: {e}")
+            return False
 
     # --- Thread-safe wrappers ---
     def add_block(self, block: Block) -> bool:
@@ -332,6 +430,32 @@ class Blockchain:
             update_block_transaction_count(len(block.txs))
         except Exception as e:
             logger.warning(f"Failed to update metrics: {e}")
+
+        # Create snapshot if enabled (Phase 1.3)
+        if self.enable_snapshots and self.snapshot_manager:
+            should_snapshot = False
+
+            # Snapshot at epoch boundaries
+            if (block.header.height + 1) % self.config.epoch_length_blocks == 0:
+                should_snapshot = True
+                logger.info(f"Creating snapshot at epoch boundary (height {block.header.height})")
+
+            # Snapshot every N blocks
+            elif self.snapshot_interval > 0 and block.header.height % self.snapshot_interval == 0:
+                should_snapshot = True
+                logger.info(f"Creating snapshot at interval (height {block.header.height})")
+
+            if should_snapshot:
+                try:
+                    self.snapshot_manager.create_snapshot(
+                        state=self.state,
+                        height=block.header.height,
+                        network_id=self.config.network_id
+                    )
+                    # Cleanup old snapshots (keep last 10)
+                    self.snapshot_manager.cleanup_old_snapshots(keep_count=10)
+                except Exception as e:
+                    logger.error(f"Failed to create snapshot at height {block.header.height}: {e}")
 
         logger.info(f"Block {self.height} added. Hash: {self.last_hash[:8]}... (Round {round})")
         return True

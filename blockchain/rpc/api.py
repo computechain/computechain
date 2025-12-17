@@ -292,6 +292,59 @@ async def get_metrics():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Metrics error: {str(e)}")
 
+# ═══════════════════════════════════════════════════════════════════
+# SNAPSHOT ENDPOINTS (Phase 1.3)
+# ═══════════════════════════════════════════════════════════════════
+
+@app.get("/snapshots")
+async def list_snapshots():
+    """
+    List all available snapshots.
+
+    Returns:
+        List of snapshot metadata (height, size, accounts, validators, etc.)
+    """
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+
+    if not chain.snapshot_manager:
+        raise HTTPException(status_code=503, detail="Snapshots not enabled on this node")
+
+    try:
+        snapshots = chain.snapshot_manager.list_snapshots()
+        return [snap.model_dump() for snap in snapshots]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Snapshot error: {str(e)}")
+
+@app.get("/snapshots/{height}")
+async def get_snapshot_info(height: int):
+    """
+    Get metadata for a specific snapshot.
+
+    Args:
+        height: Block height of snapshot
+
+    Returns:
+        Snapshot metadata
+    """
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+
+    if not chain.snapshot_manager:
+        raise HTTPException(status_code=503, detail="Snapshots not enabled on this node")
+
+    try:
+        snapshots = chain.snapshot_manager.list_snapshots()
+        for snap in snapshots:
+            if snap.height == height:
+                return snap.model_dump()
+
+        raise HTTPException(status_code=404, detail=f"Snapshot at height {height} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Snapshot error: {str(e)}")
+
 def start_rpc_server(blockchain_instance: Blockchain, mempool_instance: Mempool, host: str = "0.0.0.0", port: int = 8000):
     global chain, mempool
     chain = blockchain_instance
