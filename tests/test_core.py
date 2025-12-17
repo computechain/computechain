@@ -573,8 +573,11 @@ def test_delegate_undelegate_flow(clean_chain):
     assert len(val.delegations) == 1
     assert val.delegations[0].amount == expected_total
 
-    # Check delegator got tokens back
-    assert state.get_account(del_addr).balance == balance_before - 35_000 * 1000 + undelegate_amount
+    # Check delegator: tokens NOT returned immediately (unbonding period)
+    del_acc_after_undelegate = state.get_account(del_addr)
+    assert del_acc_after_undelegate.balance == balance_before - 35_000 * 1000  # Only fee deducted
+    assert len(del_acc_after_undelegate.unbonding_delegations) == 1  # In unbonding queue
+    assert del_acc_after_undelegate.unbonding_delegations[0].amount == undelegate_amount
 
     # Undelegate remaining amount (should remove delegation record)
     remaining_amount = expected_total
@@ -597,6 +600,10 @@ def test_delegate_undelegate_flow(clean_chain):
     val = state.get_validator(val_addr)
     assert len(val.delegations) == 0  # Delegation record removed
     assert val.total_delegated == 0
+
+    # Check second undelegation also in unbonding queue
+    del_acc_after_full_undelegate = state.get_account(del_addr)
+    assert len(del_acc_after_full_undelegate.unbonding_delegations) == 2  # Both undelegations in queue
     assert val.power == 100_000_000  # Only self-stake remains
 
 def test_reward_distribution_to_delegators(clean_chain):
@@ -762,6 +769,110 @@ def test_reward_distribution_to_delegators(clean_chain):
         (del2_acc_after.balance - initial_del2_balance)
     )
     assert total_distributed == total_reward
+
+def test_unbonding_period(clean_chain):
+    """Test unbonding period for UNDELEGATE (21-day lock)."""
+    chain = clean_chain
+    state = chain.state
+
+    # Create validator
+    val_priv = generate_private_key()
+    val_pub = public_key_from_private(val_priv)
+    val_owner_addr = address_from_pubkey(val_pub)
+    val_addr = address_from_pubkey(val_pub, prefix="cpcvalcons")
+
+    # Setup validator
+    val_acc = state.get_account(val_owner_addr)
+    val_acc.balance = 500 * 10**18
+    state.set_account(val_acc)
+
+    tx_stake = Transaction(
+        tx_type=TxType.STAKE,
+        from_address=val_owner_addr,
+        amount=200 * 10**18,
+        nonce=0,
+        gas_price=1000,
+        gas_limit=100000,
+        fee=40_000 * 1000,
+        timestamp=int(time.time()),
+        pub_key=val_pub.hex(),
+        payload={"pub_key": val_pub.hex()}
+    )
+    tx_stake.sign(val_priv)
+    state.apply_transaction(tx_stake, current_height=0)
+
+    # Create delegator
+    del_priv = generate_private_key()
+    del_pub = public_key_from_private(del_priv)
+    del_addr = address_from_pubkey(del_pub)
+
+    del_acc = state.get_account(del_addr)
+    del_acc.balance = 500 * 10**18
+    state.set_account(del_acc)
+
+    # Delegate 200 CPC
+    delegation_amount = 200 * 10**18
+    tx_delegate = Transaction(
+        tx_type=TxType.DELEGATE,
+        from_address=del_addr,
+        amount=delegation_amount,
+        nonce=0,
+        gas_price=1000,
+        gas_limit=50000,
+        fee=35_000 * 1000,
+        timestamp=int(time.time()),
+        pub_key=del_pub.hex(),
+        payload={"validator": val_addr}
+    )
+    tx_delegate.sign(del_priv)
+    state.apply_transaction(tx_delegate, current_height=10)
+
+    initial_balance = state.get_account(del_addr).balance
+
+    # Undelegate 100 CPC at height 50
+    undelegate_amount = 100 * 10**18
+    tx_undelegate = Transaction(
+        tx_type=TxType.UNDELEGATE,
+        from_address=del_addr,
+        amount=undelegate_amount,
+        nonce=1,
+        gas_price=1000,
+        gas_limit=50000,
+        fee=35_000 * 1000,
+        timestamp=int(time.time()),
+        pub_key=del_pub.hex(),
+        payload={"validator": val_addr}
+    )
+    tx_undelegate.sign(del_priv)
+    state.apply_transaction(tx_undelegate, current_height=50)
+
+    # Check: Tokens NOT returned immediately
+    del_acc_after_undelegate = state.get_account(del_addr)
+    assert del_acc_after_undelegate.balance == initial_balance - 35_000 * 1000  # Only fee deducted
+    assert len(del_acc_after_undelegate.unbonding_delegations) == 1
+
+    # Check unbonding entry details
+    unbonding_entry = del_acc_after_undelegate.unbonding_delegations[0]
+    assert unbonding_entry.amount == undelegate_amount
+    assert unbonding_entry.validator == val_addr
+    unbonding_period = 100  # From CURRENT_NETWORK.undelegation_period_blocks (devnet)
+    assert unbonding_entry.completion_height == 50 + unbonding_period  # 150
+
+    # Process unbonding queue BEFORE completion_height (height 100)
+    state.process_unbonding_queue(100)
+    del_acc_at_100 = state.get_account(del_addr)
+    assert del_acc_at_100.balance == initial_balance - 35_000 * 1000  # Still no tokens returned
+    assert len(del_acc_at_100.unbonding_delegations) == 1  # Still in queue
+
+    # Process unbonding queue AT completion_height (height 150)
+    state.process_unbonding_queue(150)
+    del_acc_at_150 = state.get_account(del_addr)
+    assert del_acc_at_150.balance == initial_balance - 35_000 * 1000 + undelegate_amount  # Tokens returned!
+    assert len(del_acc_at_150.unbonding_delegations) == 0  # Queue empty
+
+    # Verify validator delegation decreased
+    val = state.get_validator(val_addr)
+    assert val.total_delegated == delegation_amount - undelegate_amount  # 100 CPC remaining
 
 def test_unjail_transaction(clean_chain):
     """Test UNJAIL transaction."""

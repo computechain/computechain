@@ -4,7 +4,7 @@ import threading
 from .accounts import Account
 from ...protocol.types.tx import Transaction
 from ...protocol.types.common import TxType
-from ...protocol.types.validator import Validator, Delegation
+from ...protocol.types.validator import Validator, Delegation, UndelegationEntry
 from ...protocol.types.poc import ComputeResult
 from ...protocol.crypto.hash import sha256, sha256_hex
 from ...protocol.crypto.addresses import address_from_pubkey
@@ -406,10 +406,18 @@ class AccountState:
             val.total_delegated -= tx.amount
             val.power -= tx.amount
 
-            # Return tokens to delegator
-            # TODO: Implement unbonding period (21 days) in next step
+            # Add to unbonding queue instead of instant return (Phase 1.2)
+            unbonding_period = CURRENT_NETWORK.undelegation_period_blocks
+            completion_height = current_height + unbonding_period if current_height is not None else unbonding_period
+
+            undelegation_entry = UndelegationEntry(
+                amount=tx.amount,
+                completion_height=completion_height,
+                validator=validator_addr
+            )
+
             sender = self.get_account(tx.from_address)
-            sender.balance += tx.amount
+            sender.unbonding_delegations.append(undelegation_entry)
             self.set_account(sender)
 
             self.set_validator(val)
@@ -454,6 +462,59 @@ class AccountState:
 
         # 5. Handle Fees - implicitly burned or collected by block proposer later
         return True
+
+    def process_unbonding_queue(self, current_height: int):
+        """
+        Process unbonding queue for all accounts.
+        Returns tokens to delegators whose unbonding period has completed.
+
+        Args:
+            current_height: Current block height
+        """
+        # Get all accounts from DB and cache
+        all_db_data = self.db.get_state_by_prefix("acc:")
+
+        for k, v in all_db_data.items():
+            addr = k.split(":")[1]
+            acc = Account.model_validate_json(v)
+
+            # Check if account has unbonding delegations
+            if not acc.unbonding_delegations:
+                continue
+
+            # Process completed unbondings
+            completed_unbondings = []
+            for entry in acc.unbonding_delegations:
+                if entry.completion_height <= current_height:
+                    # Unbonding period completed - return tokens
+                    acc.balance += entry.amount
+                    completed_unbondings.append(entry)
+
+            # Remove completed unbondings from queue
+            if completed_unbondings:
+                acc.unbonding_delegations = [
+                    e for e in acc.unbonding_delegations
+                    if e not in completed_unbondings
+                ]
+                self.set_account(acc)
+
+        # Also process accounts in cache that might not be in DB yet
+        for addr, acc in self._accounts.items():
+            if not acc.unbonding_delegations:
+                continue
+
+            completed_unbondings = []
+            for entry in acc.unbonding_delegations:
+                if entry.completion_height <= current_height:
+                    acc.balance += entry.amount
+                    completed_unbondings.append(entry)
+
+            if completed_unbondings:
+                acc.unbonding_delegations = [
+                    e for e in acc.unbonding_delegations
+                    if e not in completed_unbondings
+                ]
+                # Account already in cache, will be persisted later
 
     def compute_state_root(self) -> str:
         """Computes Merkle root of the entire account state."""

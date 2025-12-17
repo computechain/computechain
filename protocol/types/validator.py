@@ -14,6 +14,12 @@ class UnstakingEntry(BaseModel):
     completion_height: int         # Block height when tokens become available
     beneficiary: str              # Address to receive tokens (usually validator owner)
 
+class UndelegationEntry(BaseModel):
+    """Represents a pending undelegation request (unbonding period)."""
+    amount: int                    # Amount being undelegated
+    completion_height: int         # Block height when tokens become available
+    validator: str                 # Validator address tokens were delegated to
+
 class Validator(BaseModel):
     address: str      # Bech32 address (cpcvalcons...)
     pq_pub_key: str   # Hex encoded PQ public key

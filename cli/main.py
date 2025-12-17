@@ -159,6 +159,32 @@ def cmd_query_rewards(args):
     except Exception as e:
         print(f"Connection error: {e}")
 
+def cmd_query_unbonding(args):
+    url = get_node_url(args)
+    try:
+        resp = requests.get(f"{url}/delegator/{args.address}/unbonding")
+        if resp.status_code != 200:
+            print(f"Error: {resp.text}")
+            sys.exit(1)
+        data = resp.json()
+
+        print(f"Delegator: {data['delegator']}")
+        print(f"Current Height: {data['current_height']}")
+        print(f"Total Unbonding: {data['total_unbonding'] / 10**DECIMALS} {DENOM}")
+        print(f"Unbonding Count: {data['unbonding_count']}")
+
+        unbonding = data['unbonding_delegations']
+        if unbonding:
+            print(f"\n{'Validator':<45} {'Amount':<15} {'Completion':<12} {'Blocks Left'}")
+            print("-" * 90)
+            for entry in unbonding:
+                amount_cpc = entry['amount'] / 10**DECIMALS
+                print(f"{entry['validator']:<45} {amount_cpc:<15.6f} {entry['completion_height']:<12} {entry['blocks_remaining']}")
+        else:
+            print("\nNo unbonding delegations.")
+    except Exception as e:
+        print(f"Connection error: {e}")
+
 # --- Tx Commands ---
 def get_nonce(url, address):
     try:
@@ -575,6 +601,9 @@ def main():
     pq_rewards = sp_query.add_parser("rewards", help="Get reward history for address")
     pq_rewards.add_argument("address", help="Delegator address")
 
+    pq_unbonding = sp_query.add_parser("unbonding", help="Get unbonding delegations for address")
+    pq_unbonding.add_argument("address", help="Delegator address")
+
     # tx
     p_tx = subparsers.add_parser("tx", help="Create and send transactions")
     sp_tx = p_tx.add_subparsers(dest="subcommand")
@@ -648,6 +677,7 @@ def main():
         elif args.subcommand == "validators": cmd_query_validators(args)
         elif args.subcommand == "delegations": cmd_query_delegations(args)
         elif args.subcommand == "rewards": cmd_query_rewards(args)
+        elif args.subcommand == "unbonding": cmd_query_unbonding(args)
         else: p_query.print_help()
         
     elif args.command == "tx":

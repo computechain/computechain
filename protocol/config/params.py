@@ -46,6 +46,8 @@ class NetworkConfig:
                  performance_lookback_epochs: int = 3,
                  # Unstaking params
                  unstaking_period_blocks: int = 100,
+                 # Undelegation params (Phase 1.2)
+                 undelegation_period_blocks: int = 100,  # 21 days on mainnet (181440 blocks @ 10s)
                  # Unjail params (Phase 3)
                  unjail_fee: int = 1000 * 10**18,  # 1000 CPC to unjail early
                  # Delegation params (Phase 2)
@@ -75,6 +77,7 @@ class NetworkConfig:
         self.ejection_threshold_jails = ejection_threshold_jails
         self.performance_lookback_epochs = performance_lookback_epochs
         self.unstaking_period_blocks = unstaking_period_blocks
+        self.undelegation_period_blocks = undelegation_period_blocks
         # Unjail params
         self.unjail_fee = unjail_fee
         # Delegation params

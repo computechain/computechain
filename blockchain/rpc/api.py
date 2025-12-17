@@ -165,6 +165,36 @@ async def get_delegator_rewards(address: str):
         "current_epoch": chain.state.epoch_index
     }
 
+@app.get("/delegator/{address}/unbonding")
+async def get_delegator_unbonding(address: str):
+    """Get unbonding delegations for a specific delegator address."""
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+
+    acc = chain.state.get_account(address)
+
+    # Calculate total unbonding amount
+    total_unbonding = sum(entry.amount for entry in acc.unbonding_delegations)
+
+    # Convert unbonding_delegations to list with completion info
+    unbonding_entries = [
+        {
+            "validator": entry.validator,
+            "amount": entry.amount,
+            "completion_height": entry.completion_height,
+            "blocks_remaining": max(0, entry.completion_height - chain.height)
+        }
+        for entry in acc.unbonding_delegations
+    ]
+
+    return {
+        "delegator": address,
+        "total_unbonding": total_unbonding,
+        "unbonding_count": len(acc.unbonding_delegations),
+        "unbonding_delegations": unbonding_entries,
+        "current_height": chain.height
+    }
+
 @app.get("/validators/leaderboard")
 async def get_validators_leaderboard():
     """Get validators sorted by performance score."""

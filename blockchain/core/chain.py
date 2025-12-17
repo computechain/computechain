@@ -308,7 +308,10 @@ class Blockchain:
 
         # 6.1 Distribute Rewards (Block Reward + Fees)
         self._distribute_rewards(block, self.state)
-        
+
+        # 6.2 Process Unbonding Queue (Phase 1.2)
+        self.state.process_unbonding_queue(block.header.height)
+
         # 7. Persist
         self.state.persist()
         self.db.save_block(block.header.height, block.hash(), block.model_dump_json())
