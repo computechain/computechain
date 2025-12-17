@@ -324,7 +324,15 @@ class Blockchain:
         self.height = block.header.height
         self.last_hash = block.hash()
         self.last_block_timestamp = block.header.timestamp # Update TS
-        
+
+        # Update Prometheus metrics (Phase 1.3)
+        try:
+            from blockchain.observability.metrics import update_metrics, update_block_transaction_count
+            update_metrics(self)
+            update_block_transaction_count(len(block.txs))
+        except Exception as e:
+            logger.warning(f"Failed to update metrics: {e}")
+
         logger.info(f"Block {self.height} added. Hash: {self.last_hash[:8]}... (Round {round})")
         return True
 

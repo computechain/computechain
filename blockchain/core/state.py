@@ -337,6 +337,8 @@ class AccountState:
 
         elif tx.tx_type == TxType.DELEGATE:
             # Phase 2: Delegate tokens to a validator
+            from protocol.config.economic_model import ECONOMIC_CONFIG
+
             validator_addr = tx.payload.get("validator")
             if not validator_addr:
                 raise ValueError("DELEGATE must provide 'validator' address in payload")
@@ -350,6 +352,33 @@ class AccountState:
             min_delegation = CURRENT_NETWORK.min_delegation
             if tx.amount < min_delegation:
                 raise ValueError(f"Delegation amount {tx.amount} below minimum {min_delegation} ({min_delegation / 10**18} CPC)")
+
+            # Phase 1.2: Check max validators per delegator
+            delegator_validator_count = sum(
+                1 for v in self.get_all_validators()
+                if any(d.delegator == tx.from_address for d in v.delegations)
+            )
+
+            # Check if this is a new delegation (not adding to existing)
+            is_new_delegation = not any(d.delegator == tx.from_address for d in val.delegations)
+
+            if is_new_delegation and delegator_validator_count >= ECONOMIC_CONFIG.max_validators_per_delegator:
+                raise ValueError(
+                    f"Delegator already delegating to {delegator_validator_count} validators "
+                    f"(max {ECONOMIC_CONFIG.max_validators_per_delegator})"
+                )
+
+            # Phase 1.2: Check max validator power share (prevent >20% centralization)
+            new_validator_power = val.power + tx.amount
+            total_voting_power = sum(v.power for v in self.get_all_validators()) + tx.amount
+
+            if total_voting_power > 0:
+                power_share = new_validator_power / total_voting_power
+                if power_share > ECONOMIC_CONFIG.max_validator_power_share:
+                    raise ValueError(
+                        f"This delegation would give validator {power_share*100:.1f}% voting power "
+                        f"(max {ECONOMIC_CONFIG.max_validator_power_share*100:.0f}%)"
+                    )
 
             # Update validator's delegated amount
             val.total_delegated += tx.amount

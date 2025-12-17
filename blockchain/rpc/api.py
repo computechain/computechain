@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from typing import Optional, List
 from ...protocol.types.tx import Transaction
@@ -270,6 +270,27 @@ async def send_tx(tx: Transaction):
         raise HTTPException(status_code=400, detail=str(e))
     
     return {"tx_hash": tx.hash_hex, "status": "received"}
+
+@app.get("/metrics")
+async def get_metrics():
+    """
+    Prometheus metrics endpoint (Phase 1.3).
+
+    Returns metrics in Prometheus text format.
+    """
+    try:
+        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from ..observability.metrics import metrics_registry
+
+        # Generate Prometheus metrics
+        metrics_data = generate_latest(metrics_registry)
+
+        return Response(
+            content=metrics_data,
+            media_type=CONTENT_TYPE_LATEST
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Metrics error: {str(e)}")
 
 def start_rpc_server(blockchain_instance: Blockchain, mempool_instance: Mempool, host: str = "0.0.0.0", port: int = 8000):
     global chain, mempool
