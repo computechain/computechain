@@ -69,24 +69,36 @@
 **Estimated Duration:** 2 months
 **Goal:** Bulletproof L1 with complete staking/delegation system
 
-#### 1.1 Delegation System Completion ⭐ CRITICAL
-- [ ] **Individual delegation tracking**
-  - Store `List[Delegation]` per validator
-  - Track delegator addresses, amounts, creation height
-  - API: `/delegator/{address}/delegations`
-  - **Acceptance:** Query returns all delegations for address
+#### 1.1 Delegation System Completion ⭐ CRITICAL ✅ **COMPLETED**
+- [x] **Individual delegation tracking** ✅ DONE (Dec 17, 2025)
+  - Store `List[Delegation]` per validator ✅
+  - Track delegator addresses, amounts, creation height ✅
+  - API: `/delegator/{address}/delegations` ✅
+  - **Acceptance:** Query returns all delegations for address ✅
+  - **Implementation:** `protocol/types/validator.py:53`, `blockchain/rpc/api.py:117`
+  - **Tests:** `test_delegate_undelegate_flow` passing
 
-- [ ] **Proportional reward distribution**
-  - Calculate delegator shares from block rewards
-  - Distribute rewards based on delegation ratio
-  - Deduct validator commission correctly
-  - **Acceptance:** Rewards sum matches block reward, commission accurate
+- [x] **Proportional reward distribution** ✅ DONE (Dec 17, 2025)
+  - Calculate delegator shares from block rewards ✅
+  - Distribute rewards based on delegation ratio ✅
+  - Deduct validator commission correctly ✅
+  - **Acceptance:** Rewards sum matches block reward, commission accurate ✅
+  - **Implementation:** `blockchain/core/chain.py:389-429` (`_distribute_delegator_rewards`)
+  - **Tests:** `test_reward_distribution_to_delegators` passing
 
-- [ ] **Delegation rewards history**
-  - Track rewards per epoch per delegator
-  - Enable reward claims (auto or manual)
-  - API: `/delegator/{address}/rewards`
-  - **Acceptance:** Historical rewards queryable, accurate
+- [x] **Delegation rewards history** ✅ DONE (Dec 17, 2025)
+  - Track rewards per epoch per delegator ✅
+  - Auto reward distribution (no manual claim needed) ✅
+  - API: `/delegator/{address}/rewards` ✅
+  - **Acceptance:** Historical rewards queryable, accurate ✅
+  - **Implementation:** `blockchain/core/accounts.py:11` (`reward_history`), `blockchain/rpc/api.py:144`
+  - **Tests:** reward_history validated in tests
+
+- [x] **Additional improvements completed:**
+  - Fixed `created_height` tracking (now uses actual block height)
+  - Added `min_delegation` validation (100 CPC minimum enforced)
+  - CLI commands: `query delegations`, `query rewards` working
+  - All 24 unit tests passing ✅
 
 #### 1.2 Economic Model Hardening ⭐ CRITICAL
 - [ ] **Unbonding period**
@@ -807,40 +819,41 @@ These are NOT blocking mainnet launch. Separate research/development streams:
 
 These are the HIGHEST priority items identified by technical review:
 
-### Week 1: Delegation & Observability
+### Week 1: Delegation & Observability ✅ **PARTIALLY COMPLETED**
 
-1. **Individual Delegation Tracking**
-   - [ ] Add `delegations: List[Delegation]` to Validator model
-   - [ ] Store delegations in state
-   - [ ] API: `/delegator/{addr}/delegations`
-   - [ ] CLI: `query delegations {addr}`
+1. **Individual Delegation Tracking** ✅ **COMPLETED (Dec 17, 2025)**
+   - [x] Add `delegations: List[Delegation]` to Validator model ✅
+   - [x] Store delegations in state ✅
+   - [x] API: `/delegator/{addr}/delegations` ✅
+   - [x] CLI: `query delegations {addr}` ✅
 
-2. **Proportional Rewards**
-   - [ ] Calculate delegator shares
-   - [ ] Distribute rewards per epoch
-   - [ ] Deduct validator commission
-   - [ ] Test: rewards sum = block reward
+2. **Proportional Rewards** ✅ **COMPLETED (Dec 17, 2025)**
+   - [x] Calculate delegator shares ✅
+   - [x] Distribute rewards per epoch ✅
+   - [x] Deduct validator commission ✅
+   - [x] Test: rewards sum = block reward ✅
 
-3. **Prometheus Metrics**
+3. **Prometheus Metrics** ⏳ **PENDING**
    - [ ] Export: block_height, block_time, tx_count, validator_count
    - [ ] Export: validator_uptime, missed_blocks, jail_count
    - [ ] Export: mempool_size, state_size
 
-### Week 2: Snapshots & Testing
+### Week 2: Snapshots & Testing ⏳ **PENDING**
 
-4. **State Snapshots**
+4. **State Snapshots** ⏳ **PENDING**
    - [ ] Snapshot state every 10 epochs
    - [ ] Save to disk (compressed)
    - [ ] Fast sync from snapshot
    - [ ] Test: sync from snapshot <5 min
 
-5. **Unbonding Queue**
+5. **Unbonding Queue** ⏳ **PENDING**
    - [ ] Add `unbonding_queue: List[UnbondingEntry]`
    - [ ] Process queue every block
    - [ ] `CLAIM_UNBONDED` transaction
    - [ ] Test: 21-day unbonding enforced
+   - **Note:** Model already has `UnbondingEntry` defined in `protocol/types/validator.py:11`
 
-6. **Load Test Harness**
+6. **Load Test Harness** ⏳ **PENDING**
    - [ ] Transaction generator script
    - [ ] Validator simulator (10+ nodes)
    - [ ] Run: 500 TPS for 1 hour
@@ -933,6 +946,7 @@ These are the HIGHEST priority items identified by technical review:
 
 **v1 (Dec 14, 2025):** Initial roadmap
 **v2 (Dec 14, 2025):** Revised based on technical review feedback
+**v3 (Dec 17, 2025):** Updated with Phase 1.1 completion status
 
 **Key Changes in v2:**
 - Split Phase 2 into 2A (PoC Core) and 2B (Marketplace)
@@ -944,6 +958,18 @@ These are the HIGHEST priority items identified by technical review:
 - Documented SQLite → RocksDB migration path
 - Added immediate actions (2-week plan)
 - Added critical risks & mitigation strategies
+
+**Key Changes in v3:**
+- ✅ **Phase 1.1 Delegation System COMPLETED** (Dec 17, 2025)
+  - Individual delegation tracking implemented and tested
+  - Proportional reward distribution working
+  - Delegation rewards history tracked per epoch
+  - API endpoints and CLI commands operational
+  - Fixed `created_height` tracking (uses actual block height)
+  - Added `min_delegation` validation (100 CPC enforced)
+  - All 24 unit tests passing
+- ⏳ **Phase 1.2 Unbonding Period** - Next priority
+- ⏳ **Phase 1.3 Infrastructure** - Prometheus, state snapshots pending
 
 ---
 

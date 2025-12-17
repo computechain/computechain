@@ -264,7 +264,7 @@ class Blockchain:
         
         for tx in block.txs:
             try:
-                tmp_state.apply_transaction(tx)
+                tmp_state.apply_transaction(tx, current_height=block.header.height)
                 valid_txs.append(tx)
                 cumulative_gas += GAS_PER_TYPE.get(tx.tx_type, 0)
             except Exception as e:
@@ -478,7 +478,7 @@ class Blockchain:
 
             # Apply transactions
             for tx in block.txs:
-                self.state.apply_transaction(tx)
+                self.state.apply_transaction(tx, current_height=block.header.height)
             
             # Epoch Logic Replay
             if (h + 1) % self.config.epoch_length_blocks == 0:

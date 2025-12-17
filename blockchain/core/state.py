@@ -95,8 +95,14 @@ class AccountState:
         if val:
             self.epoch_index = int(val)
 
-    def apply_transaction(self, tx: Transaction) -> bool:
-        """Applies transaction to state (in-memory). Raises error on failure."""
+    def apply_transaction(self, tx: Transaction, current_height: Optional[int] = None) -> bool:
+        """
+        Applies transaction to state (in-memory). Raises error on failure.
+
+        Args:
+            tx: Transaction to apply
+            current_height: Current block height (used for delegation tracking, etc.)
+        """
         
         # 0. Crypto Verification
         if not tx.signature or not tx.pub_key:
@@ -335,7 +341,9 @@ class AccountState:
                 raise ValueError(f"Validator {validator_addr} not found")
 
             # Check minimum delegation amount
-            # TODO: Add min_delegation config check
+            min_delegation = CURRENT_NETWORK.min_delegation
+            if tx.amount < min_delegation:
+                raise ValueError(f"Delegation amount {tx.amount} below minimum {min_delegation} ({min_delegation / 10**18} CPC)")
 
             # Update validator's delegated amount
             val.total_delegated += tx.amount
@@ -353,13 +361,11 @@ class AccountState:
                 existing_delegation.amount += tx.amount
             else:
                 # Create new delegation record
-                # Note: We need current block height. For now, use 0 as placeholder
-                # In production, pass current_height to apply_transaction
                 new_delegation = Delegation(
                     delegator=tx.from_address,
                     validator=validator_addr,
                     amount=tx.amount,
-                    created_height=0  # TODO: Pass current block height
+                    created_height=current_height if current_height is not None else 0
                 )
                 val.delegations.append(new_delegation)
 

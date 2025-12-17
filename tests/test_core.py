@@ -490,11 +490,11 @@ def test_delegate_undelegate_flow(clean_chain):
     del_addr = address_from_pubkey(del_pub)
 
     acc_del = state.get_account(del_addr)
-    acc_del.balance = 200_000_000
+    acc_del.balance = 500 * 10**18  # Enough for delegations + fees
     state.set_account(acc_del)
 
-    # Delegate 50 CPC
-    delegation_amount = 50_000_000
+    # Delegate 150 CPC (must be >= 100 CPC minimum)
+    delegation_amount = 150 * 10**18
     tx_delegate = Transaction(
         tx_type=TxType.DELEGATE,
         from_address=del_addr,
@@ -522,10 +522,11 @@ def test_delegate_undelegate_flow(clean_chain):
     assert val.delegations[0].amount == delegation_amount
 
     # Test second delegation from same delegator (should update existing)
+    second_delegation = 100 * 10**18  # Minimum amount
     tx_delegate2 = Transaction(
         tx_type=TxType.DELEGATE,
         from_address=del_addr,
-        amount=25_000_000,
+        amount=second_delegation,
         nonce=1,
         gas_price=1000,
         gas_limit=50000,
@@ -540,11 +541,11 @@ def test_delegate_undelegate_flow(clean_chain):
     # Check delegation updated (not created new)
     val = state.get_validator(val_addr)
     assert len(val.delegations) == 1  # Still only one delegation record
-    assert val.delegations[0].amount == delegation_amount + 25_000_000
-    assert val.total_delegated == delegation_amount + 25_000_000
+    assert val.delegations[0].amount == delegation_amount + second_delegation
+    assert val.total_delegated == delegation_amount + second_delegation
 
-    # Undelegate 30 CPC (partial undelegation)
-    undelegate_amount = 30_000_000
+    # Undelegate 50 CPC (partial undelegation)
+    undelegate_amount = 50 * 10**18
     balance_before = state.get_account(del_addr).balance
 
     tx_undelegate = Transaction(
@@ -564,7 +565,7 @@ def test_delegate_undelegate_flow(clean_chain):
 
     # Check undelegation
     val = state.get_validator(val_addr)
-    expected_total = delegation_amount + 25_000_000 - undelegate_amount
+    expected_total = delegation_amount + second_delegation - undelegate_amount
     assert val.total_delegated == expected_total
     assert val.power == 100_000_000 + expected_total
 
@@ -641,19 +642,20 @@ def test_reward_distribution_to_delegators(clean_chain):
 
     # Setup delegator accounts
     del1_acc = state.get_account(del1_addr)
-    del1_acc.balance = 100_000_000  # 100 tokens
+    del1_acc.balance = 300 * 10**18  # Enough for delegations + fees
     state.set_account(del1_acc)
 
     del2_acc = state.get_account(del2_addr)
-    del2_acc.balance = 100_000_000  # 100 tokens
+    del2_acc.balance = 300 * 10**18  # Enough for delegations + fees
     state.set_account(del2_acc)
 
-    # Delegator 1 delegates 60 tokens
+    # Delegator 1 delegates 150 CPC (60% of total delegations)
+    delegation1_amount = 150 * 10**18
     tx_del1 = Transaction(
         tx_type=TxType.DELEGATE,
         from_address=del1_addr,
         to_address=None,
-        amount=60_000_000,  # 60 tokens
+        amount=delegation1_amount,
         nonce=0,
         gas_price=1000,
         gas_limit=100000,
@@ -665,12 +667,13 @@ def test_reward_distribution_to_delegators(clean_chain):
     tx_del1.sign(del1_priv)
     state.apply_transaction(tx_del1)
 
-    # Delegator 2 delegates 40 tokens
+    # Delegator 2 delegates 100 CPC (40% of total delegations)
+    delegation2_amount = 100 * 10**18
     tx_del2 = Transaction(
         tx_type=TxType.DELEGATE,
         from_address=del2_addr,
         to_address=None,
-        amount=40_000_000,  # 40 tokens
+        amount=delegation2_amount,
         nonce=0,
         gas_price=1000,
         gas_limit=100000,
@@ -684,7 +687,7 @@ def test_reward_distribution_to_delegators(clean_chain):
 
     # Verify delegation setup
     val = state.get_validator(val_addr)
-    assert val.total_delegated == 100_000_000  # 60 + 40
+    assert val.total_delegated == delegation1_amount + delegation2_amount  # 150 + 100 = 250 CPC
     assert len(val.delegations) == 2
 
     # Activate validator (normally done during epoch transition)
@@ -733,10 +736,11 @@ def test_reward_distribution_to_delegators(clean_chain):
     delegators_share = total_reward - commission_amount
 
     # Expected delegator rewards (proportional to delegation)
-    # Delegator 1: 60% of delegators_share
-    # Delegator 2: 40% of delegators_share
-    expected_del1_reward = (delegators_share * 60_000_000) // 100_000_000
-    expected_del2_reward = (delegators_share * 40_000_000) // 100_000_000
+    # Delegator 1: 150 CPC = 60% of total (250 CPC)
+    # Delegator 2: 100 CPC = 40% of total (250 CPC)
+    total_delegated = delegation1_amount + delegation2_amount
+    expected_del1_reward = (delegators_share * delegation1_amount) // total_delegated
+    expected_del2_reward = (delegators_share * delegation2_amount) // total_delegated
 
     # Verify validator got commission
     assert val_acc_after.balance == initial_val_balance + commission_amount
