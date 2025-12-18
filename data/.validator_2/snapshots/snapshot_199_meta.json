@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "network_id": "devnet",
+  "height": 199,
+  "epoch_index": 20,
+  "timestamp": "2025-12-18T05:03:29.027948Z",
+  "accounts_count": 2,
+  "validators_count": 1,
+  "total_supply": 1000001400000000000000000000,
+  "total_burned": 600000000000000000000,
+  "total_minted": 2000000000000000000000,
+  "hash": "58ebd2066c295d154ee903a78dc1b5e8aab8de6b0c4266b8fcc7c3aaca4354bd",
+  "compressed_size": 650,
+  "uncompressed_size": 1397
+}
