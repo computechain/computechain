@@ -11,6 +11,7 @@ import requests
 import json
 import logging
 import traceback
+import threading
 from datetime import datetime, timedelta
 from typing import List, Dict
 import sys
@@ -34,6 +35,7 @@ from computechain.protocol.types.tx import Transaction, TxType
 from computechain.protocol.crypto.keys import sign, public_key_from_private
 from computechain.protocol.crypto.hash import sha256
 from computechain.protocol.config.params import DECIMALS
+from computechain.scripts.testing.nonce_manager import NonceManager
 
 # Logging setup
 logging.basicConfig(
@@ -67,9 +69,19 @@ class TxGenerator:
             'start_time': datetime.now()
         }
 
+        # Nonce Manager with pending transaction tracking
+        self.nonce_manager = NonceManager(self._get_nonce)
+
         # Generate test accounts
         self.test_accounts = self._generate_test_accounts(100)
-        logger.info(f"Generated {len(self.test_accounts)} test accounts")
+
+        # Fund test accounts from faucet
+        self._fund_test_accounts()
+
+        # Start background thread for transaction tracking
+        self.running = True
+        self.tracker_thread = threading.Thread(target=self._transaction_tracker, daemon=True)
+        self.tracker_thread.start()
 
     def _get_config(self, mode: str) -> Dict:
         """Get configuration for specified mode."""
@@ -80,8 +92,8 @@ class TxGenerator:
                 'send_ratio': 0.80,
                 'delegate_ratio': 0.15,
                 'undelegate_ratio': 0.05,
-                'amount_min': 1 * DECIMALS,
-                'amount_max': 100 * DECIMALS,
+                'amount_min': 1 * (10**DECIMALS),
+                'amount_max': 100 * (10**DECIMALS),
             },
             'medium': {
                 'tps_min': 10,
@@ -90,8 +102,8 @@ class TxGenerator:
                 'delegate_ratio': 0.20,
                 'undelegate_ratio': 0.10,
                 'update_validator_ratio': 0.10,
-                'amount_min': 10 * DECIMALS,
-                'amount_max': 1000 * DECIMALS,
+                'amount_min': 10 * (10**DECIMALS),
+                'amount_max': 1000 * (10**DECIMALS),
             },
             'high': {
                 'tps_min': 100,
@@ -100,8 +112,8 @@ class TxGenerator:
                 'delegate_ratio': 0.25,
                 'undelegate_ratio': 0.15,
                 'update_validator_ratio': 0.10,
-                'amount_min': 100 * DECIMALS,
-                'amount_max': 10000 * DECIMALS,
+                'amount_min': 100 * (10**DECIMALS),
+                'amount_max': 10000 * (10**DECIMALS),
             }
         }
         return configs.get(mode, configs['low'])
@@ -110,7 +122,7 @@ class TxGenerator:
         """Generate test accounts for transactions."""
         accounts = []
 
-        # Try to load existing test accounts
+        # Create or load test accounts
         for i in range(count):
             key_name = f"test_account_{i}"
             try:
@@ -125,10 +137,97 @@ class TxGenerator:
             except Exception as e:
                 logger.warning(f"Failed to create {key_name}: {e}")
 
+        logger.info(f"Generated {len(accounts)} test accounts")
         return accounts
 
+    def _fund_test_accounts(self):
+        """Fund test accounts from faucet."""
+        logger.info("Funding test accounts from faucet...")
+
+        # Load faucet account
+        faucet = self.keystore.get_key('faucet')
+        if not faucet:
+            logger.error("Faucet account not found!")
+            return
+
+        # Fund in batches to speed up (send batch, then wait for block)
+        batch_size = 10
+        funded_count = 0
+
+        for batch_start in range(0, len(self.test_accounts), batch_size):
+            batch_end = min(batch_start + batch_size, len(self.test_accounts))
+            batch = self.test_accounts[batch_start:batch_end]
+
+            logger.info(f"Funding batch {batch_start//batch_size + 1} (accounts {batch_start+1}-{batch_end})...")
+
+            batch_sent = 0
+            for account in batch:
+                # Check if account needs funding (must have at least 1M CPC)
+                balance = self._get_balance(account['address'])
+                min_balance = 1_000_000 * (10**DECIMALS)
+                if balance >= min_balance:
+                    logger.debug(f"Account {account['address'][:20]}... already funded")
+                    funded_count += 1
+                    continue
+
+                try:
+                    # Send 1,000,000 CPC to each account
+                    amount = 1_000_000 * (10**DECIMALS)
+                    nonce = self.nonce_manager.get_next_nonce(faucet['address'])
+
+                    tx = Transaction(
+                        tx_type=TxType.TRANSFER,
+                        from_address=faucet['address'],
+                        to_address=account['address'],
+                        amount=amount,
+                        fee=21000000,
+                        nonce=nonce,
+                        gas_price=1000,
+                        gas_limit=21000,
+                        pub_key=faucet['public_key'],
+                        signature=""
+                    )
+
+                    # Sign transaction
+                    msg_hash = bytes.fromhex(tx.hash())
+                    private_key = bytes.fromhex(faucet['private_key'])
+                    signature = sign(msg_hash, private_key)
+                    tx.signature = signature.hex()
+
+                    # Broadcast
+                    if self._broadcast_tx(tx):
+                        funded_count += 1
+                        batch_sent += 1
+                        time.sleep(0.05)  # Small delay between txs in batch
+
+                except Exception as e:
+                    logger.warning(f"Failed to fund {account['address']}: {e}")
+
+            logger.info(f"Batch sent: {batch_sent} transactions")
+
+            # Wait for block to include this batch before sending next
+            logger.info("Waiting 12s for batch to be included in block...")
+            time.sleep(12)
+
+        logger.info(f"Successfully funded {funded_count}/{len(self.test_accounts)} test accounts")
+
+        # Wait a bit more to ensure all are confirmed
+        logger.info("Waiting 10 more seconds for final confirmations...")
+        time.sleep(10)
+
+    def _get_balance(self, address: str) -> int:
+        """Get current balance for address."""
+        try:
+            resp = requests.get(f"{self.node_url}/balance/{address}", timeout=5)
+            if resp.status_code == 200:
+                return int(resp.json().get('balance', 0))
+            return 0
+        except Exception as e:
+            logger.debug(f"Failed to get balance for {address}: {e}")
+            return 0
+
     def _get_nonce(self, address: str) -> int:
-        """Get current nonce for address."""
+        """Get current nonce for address from blockchain."""
         try:
             resp = requests.get(f"{self.node_url}/balance/{address}", timeout=5)
             if resp.status_code == 200:
@@ -137,6 +236,36 @@ class TxGenerator:
         except Exception as e:
             logger.warning(f"Failed to get nonce for {address}: {e}")
             return 0
+
+    def _transaction_tracker(self):
+        """
+        Background thread for tracking pending transactions.
+        Checks for timeouts and syncs with blockchain periodically.
+        """
+        logger.info("Transaction tracker started")
+
+        while self.running:
+            try:
+                # Check for timed out pending transactions
+                self.nonce_manager.check_timeouts()
+
+                # Print nonce manager stats every 30 seconds
+                if hasattr(self, '_last_stats_print'):
+                    if time.time() - self._last_stats_print > 30:
+                        stats = self.nonce_manager.get_stats()
+                        logger.info(f"NonceManager stats: {stats}")
+                        self._last_stats_print = time.time()
+                else:
+                    self._last_stats_print = time.time()
+
+                # Sleep for 10 seconds before next check
+                time.sleep(10)
+
+            except Exception as e:
+                logger.error(f"Error in transaction tracker: {e}")
+                time.sleep(10)
+
+        logger.info("Transaction tracker stopped")
 
     def _get_validators(self) -> List[Dict]:
         """Get list of validators."""
@@ -152,6 +281,10 @@ class TxGenerator:
 
     def _broadcast_tx(self, tx: Transaction) -> bool:
         """Broadcast transaction to node."""
+        tx_hash = tx.hash()
+        from_address = tx.from_address
+        nonce = tx.nonce
+
         try:
             tx_json = tx.model_dump()
             tx_json['tx_type'] = tx.tx_type.value  # Serialize enum
@@ -163,13 +296,20 @@ class TxGenerator:
             )
 
             if resp.status_code == 200:
-                logger.debug(f"TX success: {tx.hash()[:8]}...")
+                # Transaction successfully sent to mempool
+                self.nonce_manager.on_tx_sent(from_address, tx_hash, nonce)
+                logger.debug(f"TX sent: {tx_hash[:8]}... (nonce={nonce})")
                 return True
             else:
-                logger.warning(f"TX failed: {resp.text}")
+                # Transaction rejected by mempool
+                error_text = resp.text
+                self.nonce_manager.on_tx_failed(from_address, tx_hash, nonce, error_text)
+                logger.warning(f"TX rejected: {tx_hash[:8]}... (nonce={nonce}): {error_text}")
                 return False
         except Exception as e:
-            logger.error(f"Broadcast error: {e}")
+            # Network error or other exception
+            self.nonce_manager.on_tx_failed(from_address, tx_hash, nonce, str(e))
+            logger.error(f"Broadcast error for {tx_hash[:8]}...: {e}")
             return False
 
     def generate_send_tx(self) -> Transaction:
@@ -182,17 +322,17 @@ class TxGenerator:
             recipient = random.choice(self.test_accounts)
 
         amount = random.randint(self.config['amount_min'], self.config['amount_max'])
-        nonce = self._get_nonce(sender['address'])
+        nonce = self.nonce_manager.get_next_nonce(sender['address'])
 
         tx = Transaction(
             tx_type=TxType.TRANSFER,
             from_address=sender['address'],
             to_address=recipient['address'],
             amount=amount,
+            fee=21000000,  # 21M fee for TRANSFER
             nonce=nonce,
             gas_price=1000,
             gas_limit=21000,
-            data="",
             pub_key=sender['public_key'],
             signature=""
         )
@@ -215,20 +355,21 @@ class TxGenerator:
             return None
 
         validator = random.choice(validators)
-        amount = random.randint(100 * DECIMALS, 10000 * DECIMALS)
-        nonce = self._get_nonce(delegator['address'])
+        amount = random.randint(100 * (10**DECIMALS), 10000 * (10**DECIMALS))
+        nonce = self.nonce_manager.get_next_nonce(delegator['address'])
 
         tx = Transaction(
             tx_type=TxType.STAKE,
             from_address=delegator['address'],
             to_address=validator['address'],
             amount=amount,
+            fee=50000000,  # 50M fee for STAKE
             nonce=nonce,
             gas_price=1000,
             gas_limit=50000,
-            data="",
             pub_key=delegator['public_key'],
-            signature=""
+            signature="",
+            payload={"pub_key": validator['pq_pub_key']}  # Include validator's pub_key in payload
         )
 
         # Sign
@@ -269,8 +410,17 @@ class TxGenerator:
                     break
 
                 try:
+                    # Generate transaction
                     tx = self.generate_transaction()
                     if tx:
+                        # Check if sender has too many pending transactions
+                        pending_count = self.nonce_manager.get_pending_count(tx.from_address)
+
+                        if pending_count > 10:  # Max 10 pending TX per account
+                            logger.debug(f"Too many pending TX ({pending_count}) for {tx.from_address[:10]}..., skipping")
+                            time.sleep(delay)
+                            continue
+
                         success = self._broadcast_tx(tx)
 
                         # Update stats
@@ -288,6 +438,7 @@ class TxGenerator:
                 except KeyboardInterrupt:
                     logger.info("Interrupted by user")
                     self.print_stats()
+                    self.cleanup()
                     return
                 except Exception as e:
                     logger.error(f"Error generating tx: {e}")
@@ -299,11 +450,15 @@ class TxGenerator:
 
         logger.info("TX generator finished")
         self.print_stats()
+        self.cleanup()
 
     def print_stats(self):
         """Print statistics."""
         elapsed = (datetime.now() - self.stats['start_time']).total_seconds()
         avg_tps = self.stats['total_sent'] / elapsed if elapsed > 0 else 0
+
+        # Get nonce manager stats
+        nonce_stats = self.nonce_manager.get_stats()
 
         logger.info("=" * 60)
         logger.info(f"TX Generator Statistics ({self.mode} mode)")
@@ -314,7 +469,22 @@ class TxGenerator:
         logger.info(f"Success rate: {100 * self.stats['successful'] / max(1, self.stats['total_sent']):.2f}%")
         logger.info(f"Average TPS: {avg_tps:.2f}")
         logger.info(f"By type: {self.stats['by_type']}")
+        logger.info("")
+        logger.info("NonceManager Statistics:")
+        logger.info(f"  Current pending: {nonce_stats['current_pending']}")
+        logger.info(f"  Total confirmed: {nonce_stats['total_confirmed']}")
+        logger.info(f"  Total failed: {nonce_stats['total_failed']}")
+        logger.info(f"  Resyncs: {nonce_stats['resyncs']}")
+        logger.info(f"  Addresses tracked: {nonce_stats['addresses_tracked']}")
         logger.info("=" * 60)
+
+    def cleanup(self):
+        """Cleanup resources."""
+        logger.info("Cleaning up...")
+        self.running = False
+        if hasattr(self, 'tracker_thread') and self.tracker_thread.is_alive():
+            self.tracker_thread.join(timeout=5)
+        logger.info("Cleanup complete")
 
 
 def main():
