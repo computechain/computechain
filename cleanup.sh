@@ -31,8 +31,9 @@ fi
 # Clean data directories
 echo "Cleaning data directories..."
 if [ -d "data" ]; then
-    rm -rf data/*
-    echo "  ✓ data/* cleaned"
+    # Remove all files including hidden ones (.validator_*)
+    rm -rf data/* data/.[!.]* data/..?* 2>/dev/null || true
+    echo "  ✓ data/* cleaned (including hidden files)"
 else
     echo "  (no data directory)"
 fi

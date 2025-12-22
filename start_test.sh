@@ -61,7 +61,7 @@ if [ -z "$SKIP_INIT" ]; then
     for i in {1..5}; do
         if [ ! -d "data/.validator_$i" ]; then
             echo "  Initializing validator_$i..."
-            ./run_node.py --validator validator_$i init --datadir data/.validator_$i > /dev/null 2>&1
+            ./run_node.py --datadir data/.validator_$i init > /dev/null 2>&1
         else
             echo "  validator_$i already initialized"
         fi
