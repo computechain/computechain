@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 import threading
 from ...protocol.types.tx import Transaction
 from ...protocol.crypto.keys import verify
@@ -6,12 +6,15 @@ from ...protocol.crypto.addresses import address_from_pubkey
 from ...protocol.config.params import GAS_PER_TYPE, CURRENT_NETWORK
 import logging
 
+if TYPE_CHECKING:
+    from .state import AccountState
+
 logger = logging.getLogger(__name__)
 
-MAX_TX_PER_SENDER = 64
+MAX_TX_PER_SENDER = 1000  # Increased from 64 to handle high-load scenarios
 
 class Mempool:
-    def __init__(self, max_size: int = 5000):
+    def __init__(self, max_size: int = 100000):  # Increased from 5000 to handle high-load
         self.transactions: Dict[str, Transaction] = {} # tx_hash -> Transaction
         self.max_size = max_size
         self._lock = threading.Lock()
@@ -114,3 +117,28 @@ class Mempool:
     def size(self) -> int:
         with self._lock:
             return len(self.transactions)
+
+    def prune_stale_transactions(self, state: 'AccountState') -> int:
+        """
+        Removes transactions with stale nonces (nonce < account's current nonce).
+        Returns the number of transactions removed.
+        """
+        with self._lock:
+            stale_txs = []
+            for tx_hash, tx in self.transactions.items():
+                try:
+                    account = state.get_account(tx.from_address)
+                    if tx.nonce < account.nonce:
+                        stale_txs.append(tx_hash)
+                except Exception as e:
+                    # If we can't get account state, keep the transaction
+                    logger.debug(f"Could not check nonce for tx {tx_hash[:8]}: {e}")
+
+            # Remove stale transactions
+            for tx_hash in stale_txs:
+                del self.transactions[tx_hash]
+
+            if stale_txs:
+                logger.info(f"Pruned {len(stale_txs)} stale transactions from mempool")
+
+            return len(stale_txs)

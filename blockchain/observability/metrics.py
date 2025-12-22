@@ -181,9 +181,34 @@ network_id = Gauge(
 _last_block_timestamp = None
 
 
+def update_block_metrics(chain):
+    """
+    Update block-related metrics (counters/histograms).
+    Should only be called when a new block is actually added.
+
+    Args:
+        chain: Blockchain instance
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    global _last_block_timestamp
+
+    # Increment block counter
+    blocks_total.inc()
+
+    # Block time histogram
+    current_time = time.time()
+    if _last_block_timestamp is not None:
+        block_time_seconds.observe(current_time - _last_block_timestamp)
+    _last_block_timestamp = current_time
+
+
 def update_metrics(chain, mempool_instance=None):
     """
     Update all Prometheus metrics from blockchain state.
+    This is called both when blocks are added AND when metrics are scraped.
+    Only updates Gauges, not Counters/Histograms.
 
     Args:
         chain: Blockchain instance
@@ -192,19 +217,10 @@ def update_metrics(chain, mempool_instance=None):
     from protocol.config.economic_model import TREASURY_ADDRESS
     from protocol.config.params import CURRENT_NETWORK
 
-    global _last_block_timestamp
-
     state = chain.state
 
-    # Block metrics
+    # Block metrics (Gauges only)
     block_height.set(chain.height)
-    blocks_total.inc()
-
-    # Block time
-    current_time = time.time()
-    if _last_block_timestamp is not None:
-        block_time_seconds.observe(current_time - _last_block_timestamp)
-    _last_block_timestamp = current_time
 
     # Mempool
     if mempool_instance:

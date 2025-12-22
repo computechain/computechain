@@ -280,7 +280,10 @@ async def get_metrics():
     """
     try:
         from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-        from ..observability.metrics import metrics_registry
+        from blockchain.observability.metrics import metrics_registry, update_metrics
+
+        # Update metrics with current blockchain state
+        update_metrics(chain, mempool)
 
         # Generate Prometheus metrics
         metrics_data = generate_latest(metrics_registry)

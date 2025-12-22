@@ -425,9 +425,10 @@ class Blockchain:
 
         # Update Prometheus metrics (Phase 1.3)
         try:
-            from blockchain.observability.metrics import update_metrics, update_block_transaction_count
-            update_metrics(self)
-            update_block_transaction_count(len(block.txs))
+            from blockchain.observability.metrics import update_metrics, update_block_metrics, update_block_transaction_count
+            update_block_metrics(self)  # Update counters/histograms (only on block add)
+            update_metrics(self)  # Update gauges
+            update_block_transaction_count(len(block.txs))  # Update tx histogram
         except Exception as e:
             logger.warning(f"Failed to update metrics: {e}")
 

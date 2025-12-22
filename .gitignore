@@ -53,6 +53,9 @@ peers.json
 *.log
 logs/
 
+# Monitoring (separate nested repo, not pushed)
+monitoring/
+
 # IDE
 .idea/
 .vscode/

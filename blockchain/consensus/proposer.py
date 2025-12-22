@@ -16,9 +16,9 @@ from ..p2p.node import P2PNode, SyncState
 logger = logging.getLogger(__name__)
 
 class BlockProposer:
-    def __init__(self, 
-                 chain: Blockchain, 
-                 mempool: Mempool, 
+    def __init__(self,
+                 chain: Blockchain,
+                 mempool: Mempool,
                  priv_key_hex: str,
                  p2p_node: Optional[P2PNode] = None): # Inject P2P Node
         self.chain = chain
@@ -30,6 +30,7 @@ class BlockProposer:
         self.running = False
         self.thread: Optional[threading.Thread] = None
         self.on_block_created: Optional[Callable[[Block], None]] = None
+        self.last_prune_time = 0  # Track last mempool prune time
 
     def start(self):
         self.running = True
@@ -46,9 +47,18 @@ class BlockProposer:
         while self.running:
             try:
                 self._try_produce_block_step()
+
+                # Prune stale transactions every 30 seconds
+                now = int(time.time())
+                if now - self.last_prune_time >= 30:
+                    try:
+                        self.mempool.prune_stale_transactions(self.chain.state)
+                        self.last_prune_time = now
+                    except Exception as e:
+                        logger.error(f"Error pruning stale transactions: {e}")
             except Exception as e:
                 logger.error(f"Error in proposer loop: {e}")
-            
+
             # Check frequency - 1s is enough for 10s block time
             time.sleep(1.0)
 
@@ -175,8 +185,15 @@ class BlockProposer:
         if self.chain.add_block(block):
             # Remove transactions from mempool
             self.mempool.remove_transactions(txs)
+
+            # Prune stale transactions (transactions with old nonces)
+            try:
+                self.mempool.prune_stale_transactions(self.chain.state)
+            except Exception as e:
+                logger.error(f"Error pruning stale transactions: {e}")
+
             logger.info(f"Produced block {height} (I am proposer, Round {round})")
-            
+
             # Notify callback (e.g. P2P broadcast)
             if self.on_block_created:
                 try:
