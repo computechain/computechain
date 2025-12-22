@@ -52,6 +52,7 @@ genesis.json
 peers.json
 *.log
 logs/
+data/
 
 # Monitoring (separate nested repo, not pushed)
 monitoring/

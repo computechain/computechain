@@ -172,6 +172,12 @@ network_id = Gauge(
     registry=metrics_registry
 )
 
+accounts_total = Gauge(
+    'computechain_accounts_total',
+    'Total number of accounts in the network',
+    registry=metrics_registry
+)
+
 
 # ═══════════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
@@ -271,6 +277,15 @@ def update_metrics(chain, mempool_instance=None):
     network_id.labels(network=CURRENT_NETWORK.network_id).set(
         network_map.get(CURRENT_NETWORK.network_id, 0)
     )
+
+    # Account count
+    try:
+        # Count accounts with non-zero balance from cache (rough estimate)
+        account_count = len([acc for acc in state._accounts.values() if acc.balance > 0])
+        accounts_total.set(account_count)
+    except Exception as e:
+        # If fails, set to 0
+        accounts_total.set(0)
 
 
 def update_transaction_metrics(tx):

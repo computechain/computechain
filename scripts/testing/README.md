@@ -1,45 +1,31 @@
 # Phase 1.4 Testing Scripts
 
-Скрипты для автоматизированного тестирования ComputeChain.
+Load testing and monitoring tools for ComputeChain.
 
-## 🚀 Быстрый старт
+## 🚀 Quick Start
 
-### Простой тест (1 час)
-
-```bash
-cd /home/pc205/128/computechain
-./scripts/testing/full_test.sh --mode quick --clean
-```
-
-### Полный тест (7 дней)
+**For 24-hour tests, use the root-level scripts:**
 
 ```bash
-./scripts/testing/full_test.sh --mode full --clean
+# From /home/pc205/128/computechain directory:
+
+# Clean everything and start fresh 24h test
+./cleanup.sh
+./start_test.sh low      # 1-5 TPS
+./start_test.sh medium   # 10-50 TPS
+./start_test.sh high     # 50-200 TPS
 ```
+
+See root `cleanup.sh` and `start_test.sh` for details.
 
 ---
 
-## 📁 Файлы
-
-### `run_validators.sh`
-Запуск множественных валидаторов
-
-**Примеры:**
-```bash
-# 5 валидаторов с интервалом 30 секунд
-./scripts/testing/run_validators.sh --count 5 --interval 30
-
-# Со случайными интервалами (staggered)
-./scripts/testing/run_validators.sh --count 5 --staggered
-
-# Очистка данных перед запуском
-./scripts/testing/run_validators.sh --count 5 --clean
-```
+## 📁 Files in this directory
 
 ### `tx_generator.py`
-Генератор транзакций для нагрузочного тестирования
+Transaction generator for load testing (used by `start_test.sh`)
 
-**Примеры:**
+**Direct usage:**
 ```bash
 # Low load (1-5 TPS)
 python3 scripts/testing/tx_generator.py --mode low --duration 3600
@@ -47,58 +33,67 @@ python3 scripts/testing/tx_generator.py --mode low --duration 3600
 # Medium load (10-50 TPS)
 python3 scripts/testing/tx_generator.py --mode medium --duration 7200
 
-# High load (100-500 TPS)
+# High load (50-200 TPS)
 python3 scripts/testing/tx_generator.py --mode high --duration 1800
-
-# Custom (250 TPS)
-python3 scripts/testing/tx_generator.py --mode custom --tps 250 --duration 3600
 ```
 
-### `monitor.py`
-Мониторинг метрик системы и blockchain
+**Features:**
+- Automatically creates and funds 100 test accounts
+- Tracks pending transactions with NonceManager
+- Generates TRANSFER, STAKE, UNSTAKE, UNDELEGATE transactions
+- Real-time statistics and logging
 
-**Примеры:**
+### `nonce_manager.py`
+Nonce management system with pending transaction tracking
+
+**Used by:** `tx_generator.py`
+
+**Features:**
+- Prevents nonce race conditions
+- Tracks pending transactions
+- Auto-syncs with blockchain state
+- Transaction timeout detection
+
+### `monitor.py`
+System and blockchain metrics monitoring
+
+**Usage:**
 ```bash
-# Мониторинг каждые 60 секунд
+# Monitor every 60 seconds
 python3 scripts/testing/monitor.py --interval 60
 
-# С сохранением в CSV
+# With CSV output
 python3 scripts/testing/monitor.py --interval 60 --output logs/metrics.csv
 
-# С custom alert thresholds
+# Custom alert thresholds
 python3 scripts/testing/monitor.py --alert-cpu 85 --alert-ram 95
 ```
 
-### `full_test.sh`
-Полный автоматический тестовый стек
-
-**Опции:**
-- `--mode quick|full` - режим теста
-- `--clean` - очистить данные перед запуском
-- `--validators N` - количество валидаторов
-
 ---
 
-## 📊 Мониторинг
+## 📊 Monitoring
 
-### Проверка статуса
+### Check Status
 
 ```bash
 # Blockchain status
-curl http://localhost:8000/status | jq
+curl http://localhost:8000/status | python3 -m json.tool
 
 # Validators
-curl http://localhost:8000/validators | jq
+curl http://localhost:8000/validators | python3 -m json.tool
 
 # Metrics (Prometheus format)
 curl http://localhost:8000/metrics
+
+# Grafana Dashboard
+http://localhost:3000
 ```
 
-### Логи
+### Logs
 
 ```bash
 # TX Generator
-tail -f logs/tx_generator.log
+tail -f logs/tx_generator_*.log
 
 # Monitor
 tail -f logs/monitor.log
@@ -106,80 +101,129 @@ tail -f logs/monitor.log
 # Validator 1
 tail -f logs/validator_1.log
 
-# Все валидаторы
+# All validators
 tail -f logs/validator_*.log
 ```
 
-### Процессы
+### Processes
 
 ```bash
-# Проверить running processes
-ps aux | grep -E "run_node|tx_generator|monitor"
+# Check running processes
+ps aux | grep -E "run_node|tx_generator"
 
-# Остановить все
-pkill -f 'run_node.py|tx_generator.py|monitor.py'
+# Stop all
+pkill -f 'run_node.py|tx_generator.py'
+
+# Or use cleanup script
+./cleanup.sh
 ```
 
 ---
 
-## 🎯 Результаты
+## 🎯 Test Results
 
-После завершения теста:
+After test completion:
 
-**Логи:** `logs/`
-- `validator_*.log` - логи валидаторов
-- `tx_generator.log` - логи генератора транзакций
-- `monitor.log` - логи мониторинга
+**Logs:** `logs/`
+- `validator_*.log` - Validator logs
+- `tx_generator_*.log` - TX generator logs
+- `monitor.log` - Monitoring logs
 
-**Метрики:** `logs/metrics_*.csv`
-- Все метрики в CSV формате
-- Можно импортировать в Excel/Google Sheets
+**Metrics:** Prometheus + Grafana
+- Real-time dashboards: http://localhost:3000
+- Raw metrics: http://localhost:9090
 
-**PIDs:** `logs/*.pid`
-- PID файлы для управления процессами
+**Data:** `data/`
+- `.validator_*/chain.db` - Blockchain databases
+- Snapshots (if enabled)
 
 ---
 
 ## ⚠️ Troubleshooting
 
-### Валидатор не запускается
+### Validator won't start
 
 ```bash
-# Проверить логи
-tail -f logs/validator_1.log
+# Check logs
+tail -50 logs/validator_1.log
 
-# Проверить порт
+# Check port conflicts
 lsof -i :8000
 
-# Убить процесс
+# Kill and restart
 pkill -f validator_1
+./start_test.sh low
 ```
 
-### High CPU/RAM
+### Transactions stuck in mempool
 
 ```bash
-# Остановить TX generator
+# Check mempool size
+curl -s http://localhost:8000/status | grep mempool
+
+# Restart validators to clear mempool
+./cleanup.sh
+./start_test.sh low
+```
+
+### High CPU/RAM usage
+
+```bash
+# Stop TX generator
 pkill -f tx_generator.py
 
-# Снизить нагрузку
-python3 scripts/testing/tx_generator.py --mode low
+# Restart with lower load
+python3 scripts/testing/tx_generator.py --mode low --duration 3600
 ```
 
 ### Database locked
 
 ```bash
-# Остановить все
+# Stop all processes
 pkill -f run_node.py
+sleep 5
 
-# Подождать 10 секунд
-sleep 10
-
-# Перезапустить
-./scripts/testing/run_validators.sh --count 1
+# Restart
+./start_test.sh low
 ```
 
 ---
 
-## 📚 Дополнительная информация
+## 📚 Architecture
 
-См. **PHASE_1_4_TESTING_GUIDE.md** (internal only) для полного руководства.
+### NonceManager (Phase 1.3)
+Prevents nonce race conditions by tracking pending transactions:
+- Each account has local pending nonce counter
+- Syncs with blockchain periodically
+- Detects and recovers from timeouts
+- Thread-safe operation
+
+### TX Generator Modes
+- **LOW**: 1-5 TPS, 80% transfers, 15% stake, 5% unstake
+- **MEDIUM**: 10-50 TPS, similar distribution
+- **HIGH**: 50-200 TPS, stress testing
+
+### Monitoring Stack
+- **Prometheus**: Metrics collection (http://localhost:9090)
+- **Grafana**: Visualization (http://localhost:3000)
+- **Custom monitor.py**: Additional system metrics
+
+---
+
+## 🔧 Development
+
+Run unit tests:
+```bash
+# All tests
+./run_tests.sh
+
+# Specific test
+./run_tests.sh tests/test_core.py
+
+# With coverage
+python3 -m pytest tests/ --cov=blockchain --cov=protocol
+```
+
+---
+
+For complete testing guide, see project documentation.
