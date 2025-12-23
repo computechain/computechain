@@ -64,8 +64,8 @@ class NonceManager:
         self.lock = threading.RLock()
 
         # Настройки
-        self.sync_interval = 30  # Ресинхронизация каждые 30 сек
-        self.tx_timeout = 120  # Таймаут для pending TX (2 минуты)
+        self.sync_interval = 10  # Ресинхронизация каждые 10 сек (было 30)
+        self.tx_timeout = 30  # Таймаут для pending TX (30 секунд, было 120)
 
         # Статистика
         self.stats = {
@@ -221,6 +221,12 @@ class NonceManager:
     def _force_sync(self, address: str) -> None:
         """
         Принудительная синхронизация с блокчейном.
+
+        CRITICAL FIX: Агрессивная очистка pending транзакций.
+        Если blockchain_nonce изменился, это означает что некоторые транзакции
+        были обработаны ИЛИ отклонены. Без механизма on_tx_confirmed() мы не можем
+        точно знать какие именно, поэтому безопаснее очистить ВСЕ pending TX
+        и начать с blockchain_nonce.
         """
         try:
             # Получаем актуальный nonce из блокчейна
@@ -230,32 +236,40 @@ class NonceManager:
             old_blockchain = self.blockchain_nonce.get(address, 0)
             self.blockchain_nonce[address] = blockchain_nonce
 
-            # Чистим устаревшие pending транзакции
-            # (все с nonce < blockchain_nonce уже подтверждены или отклонены)
-            if address in self.pending_txs:
-                new_pending = deque()
-                for pending_tx in self.pending_txs[address]:
-                    if pending_tx.nonce >= blockchain_nonce:
-                        new_pending.append(pending_tx)
-                    else:
-                        # Транзакция с nonce < blockchain_nonce должна быть подтверждена
-                        if not pending_tx.confirmed and not pending_tx.failed:
-                            pending_tx.confirmed = True
-                            self.stats['total_confirmed'] += 1
+            # CRITICAL FIX: Если blockchain_nonce изменился (транзакции были обработаны),
+            # удаляем ВСЕ pending транзакции и начинаем заново
+            if blockchain_nonce != old_blockchain:
+                # Подсчитываем сколько TX было обработано
+                processed_count = blockchain_nonce - old_blockchain
 
+                # Очищаем pending транзакции
+                if address in self.pending_txs:
+                    old_pending_count = len(self.pending_txs[address])
+
+                    # Удаляем ВСЕ pending TX из tracking
+                    for pending_tx in self.pending_txs[address]:
                         if pending_tx.tx_hash in self.pending_hashes:
                             self.pending_hashes.remove(pending_tx.tx_hash)
+                        # Считаем обработанные как confirmed
+                        if not pending_tx.confirmed and not pending_tx.failed:
+                            self.stats['total_confirmed'] += 1
 
-                self.pending_txs[address] = new_pending
+                    # Полностью очищаем pending queue
+                    del self.pending_txs[address]
 
-            # Пересчитываем pending_nonce
-            if address in self.pending_txs and len(self.pending_txs[address]) > 0:
-                # Есть pending транзакции - следующий nonce после последней pending
-                max_pending_nonce = max(tx.nonce for tx in self.pending_txs[address])
-                self.pending_nonce[address] = max_pending_nonce + 1
-            else:
-                # Нет pending транзакций - используем blockchain_nonce
+                    logger.info(f"Aggressive cleanup for {address[:10]}...: "
+                               f"processed {processed_count} txs, cleared {old_pending_count} pending txs")
+
+                # Устанавливаем pending_nonce = blockchain_nonce (начинаем заново)
                 self.pending_nonce[address] = blockchain_nonce
+            else:
+                # blockchain_nonce не изменился - оставляем pending TX как есть
+                # но пересчитываем pending_nonce на всякий случай
+                if address in self.pending_txs and len(self.pending_txs[address]) > 0:
+                    max_pending_nonce = max(tx.nonce for tx in self.pending_txs[address])
+                    self.pending_nonce[address] = max_pending_nonce + 1
+                else:
+                    self.pending_nonce[address] = blockchain_nonce
 
             self.last_sync[address] = time.time()
             self.stats['resyncs'] += 1
