@@ -205,6 +205,23 @@
   - **Note:** SQLite sufficient for devnet/early testnet, RocksDB needed for public testnet
 
 #### 1.4 Security & Testing ⭐ CRITICAL
+
+- [ ] **Transaction Lifecycle Tracking** ⭐ PRODUCTION CRITICAL
+  - Implement proper `on_tx_confirmed()` callback mechanism
+  - Track transaction states: pending → mempool → included_in_block → confirmed
+  - Transaction receipt API: `GET /tx/{hash}/receipt` (status, block_height, confirmations)
+  - Replace aggressive cleanup workaround with precise tracking
+  - NonceManager uses callbacks instead of periodic sync
+  - Monitor transaction confirmation times (metrics)
+  - **Current Status:** Using aggressive cleanup as workaround (deletes all pending TX on blockchain_nonce change)
+  - **Production Need:** Precise tracking prevents unnecessary TX resubmissions, improves efficiency
+  - **Implementation:**
+    - `blockchain/core/chain.py` - emit `tx_confirmed` event after block inclusion
+    - `scripts/testing/nonce_manager.py` - subscribe to events, call `on_tx_confirmed(tx_hash)`
+    - `blockchain/rpc/api.py` - add `/tx/{hash}/receipt` endpoint
+  - **Acceptance:** tx_generator correctly tracks TX lifecycle, no aggressive cleanup needed
+  - **Tests:** Transaction confirmation callback working, nonce tracking accurate
+
 - [ ] **Economic Security Simulations**
   - False slashing scenarios (network partition)
   - Validator collusion simulations
@@ -248,6 +265,7 @@
 - ✅ State snapshots working (Phase 1.3) ✅ **DONE**
 - ✅ Observability stack deployed (Phase 1.3) ✅ **DONE**
 - ✅ Upgrade protocol implemented (Phase 1.3) ✅ **DONE**
+- ⏳ Transaction lifecycle tracking system (Phase 1.4) **PENDING**
 - ⏳ 500 TPS sustained, 100 validators simulated (Phase 1.4) **PENDING**
 - ⏳ <5 critical bugs remaining (Phase 1.4) **PENDING**
 - ⏳ Upgrade protocol tested in production (Phase 3) **PENDING**
@@ -256,6 +274,7 @@
 - ✅ 100% delegation features working (Phase 1.1) **DONE**
 - ✅ Economic invariants enforced (Phase 1.2) **DONE**
 - ✅ Snapshot sync time <5 minutes (Phase 1.3) **DONE**
+- ⏳ Transaction lifecycle tracking working (no aggressive cleanup workaround) (Phase 1.4) **PENDING**
 - ⏳ 500 TPS load test passing (Phase 1.4) **PENDING**
 - ⏳ 100 validator simulation stable (Phase 1.4) **PENDING**
 - ⏳ Zero economic invariant violations in 7-day test (Phase 1.4) **PENDING**
@@ -837,6 +856,7 @@ These are NOT blocking mainnet launch. Separate research/development streams:
 - ✅ Upgrade protocol implemented (versioning, migrations, UpgradeManager)
 
 **Pending (Phase 1.4-1.5):**
+- ⏳ Transaction lifecycle tracking (replace aggressive cleanup workaround)
 - ⏳ 500 TPS load test passing
 - ⏳ 100 validator simulation stable
 - ⏳ 7-day stress test (zero crashes)

@@ -69,8 +69,16 @@ class TxGenerator:
             'start_time': datetime.now()
         }
 
-        # Nonce Manager with pending transaction tracking
+        # Nonce Manager with event-based transaction tracking (Phase 1.4)
+        # Aggressive cleanup has been REMOVED for safety
         self.nonce_manager = NonceManager(self._get_nonce)
+
+        # Set running flag BEFORE starting threads
+        self.running = True
+
+        # Start HTTP polling for transaction confirmations (Phase 1.4)
+        self._subscribe_to_events()
+        logger.info("Event-based transaction tracking ENABLED (Phase 1.4)")
 
         # Generate test accounts
         self.test_accounts = self._generate_test_accounts(100)
@@ -79,7 +87,6 @@ class TxGenerator:
         self._fund_test_accounts()
 
         # Start background thread for transaction tracking
-        self.running = True
         self.tracker_thread = threading.Thread(target=self._transaction_tracker, daemon=True)
         self.tracker_thread.start()
 
@@ -236,6 +243,102 @@ class TxGenerator:
         except Exception as e:
             logger.warning(f"Failed to get nonce for {address}: {e}")
             return 0
+
+    def _subscribe_to_events(self):
+        """
+        Subscribe to blockchain events for transaction lifecycle tracking (Phase 1.4).
+
+        Uses HTTP polling of Transaction Receipt API (/tx/{hash}/receipt) to check
+        TX confirmation status. This works across process boundaries (unlike in-process EventBus).
+        """
+        import threading
+
+        # Start background thread for polling receipts
+        self.receipt_poll_thread = threading.Thread(
+            target=self._poll_transaction_receipts,
+            daemon=True,
+            name="TxReceiptPoller"
+        )
+        self.receipt_poll_thread.start()
+        logger.info("Started TX receipt polling thread (HTTP-based event tracking)")
+
+    def _poll_transaction_receipts(self):
+        """
+        Background thread that polls Transaction Receipt API to check TX confirmations.
+
+        Checks pending transactions every 2 seconds using GET /tx/{hash}/receipt API.
+        When a TX is confirmed, notifies NonceManager via on_tx_confirmed().
+        """
+        import time
+
+        logger.info("TX receipt poller started")
+        poll_count = 0
+
+        while self.running:
+            try:
+                poll_count += 1
+
+                # Get copy of currently pending TX hashes from NonceManager
+                with self.nonce_manager.lock:
+                    pending_hashes = list(self.nonce_manager.pending_hashes)
+
+                if poll_count % 10 == 0:  # Log every 20 seconds
+                    logger.info(f"Receipt poller: checking {len(pending_hashes)} pending TXs (poll #{poll_count})")
+
+                # Check each pending TX (batch of up to 20 at a time to avoid overwhelming API)
+                batch_size = 20
+                checked = 0
+                confirmed_count = 0
+
+                for tx_hash in pending_hashes[:batch_size]:
+                    try:
+                        # Query receipt API
+                        resp = requests.get(
+                            f"{self.node_url}/tx/{tx_hash}/receipt",
+                            timeout=2
+                        )
+
+                        checked += 1
+
+                        if resp.status_code == 200:
+                            receipt = resp.json()
+
+                            # If TX is confirmed, notify NonceManager
+                            if receipt.get('status') == 'confirmed':
+                                # Find the pending TX to get address and nonce
+                                with self.nonce_manager.lock:
+                                    for addr, pending_txs in self.nonce_manager.pending_txs.items():
+                                        for ptx in pending_txs:
+                                            if ptx.tx_hash == tx_hash and not ptx.confirmed:
+                                                # Notify confirmation
+                                                self.nonce_manager.on_tx_confirmed(
+                                                    addr,
+                                                    tx_hash,
+                                                    ptx.nonce
+                                                )
+                                                confirmed_count += 1
+                                                logger.info(f"✅ TX confirmed via API polling: {tx_hash[:16]}... (block {receipt.get('block_height')})")
+                                                break
+
+                        elif resp.status_code == 404:
+                            # TX not found - might be too old or failed
+                            if poll_count % 30 == 0:  # Log occasionally
+                                logger.debug(f"TX not found in receipt store: {tx_hash[:16]}...")
+
+                    except Exception as e:
+                        # Individual TX check failure - continue with others
+                        if poll_count % 30 == 0:
+                            logger.debug(f"Error checking TX {tx_hash[:16]}...: {e}")
+
+                if confirmed_count > 0:
+                    logger.info(f"Receipt poller: confirmed {confirmed_count} TXs out of {checked} checked")
+
+                # Sleep between poll cycles
+                time.sleep(2)
+
+            except Exception as e:
+                logger.error(f"Error in receipt poller: {e}")
+                time.sleep(5)
 
     def _transaction_tracker(self):
         """
@@ -470,12 +573,14 @@ class TxGenerator:
         logger.info(f"Average TPS: {avg_tps:.2f}")
         logger.info(f"By type: {self.stats['by_type']}")
         logger.info("")
-        logger.info("NonceManager Statistics:")
+        logger.info("NonceManager Statistics (Event-based tracking only):")
         logger.info(f"  Current pending: {nonce_stats['current_pending']}")
         logger.info(f"  Total confirmed: {nonce_stats['total_confirmed']}")
         logger.info(f"  Total failed: {nonce_stats['total_failed']}")
         logger.info(f"  Resyncs: {nonce_stats['resyncs']}")
         logger.info(f"  Addresses tracked: {nonce_stats['addresses_tracked']}")
+        if 'event_confirmations' in nonce_stats:
+            logger.info(f"  Event confirmations: {nonce_stats['event_confirmations']}")
         logger.info("=" * 60)
 
     def cleanup(self):
@@ -500,6 +605,7 @@ def main():
 
     args = parser.parse_args()
 
+    # Phase 1.4: Event-based tracking is now the ONLY mode (aggressive cleanup removed)
     generator = TxGenerator(args.node, args.mode)
 
     # Apply custom settings if provided

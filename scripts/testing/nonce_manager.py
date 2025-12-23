@@ -42,6 +42,9 @@ class NonceManager:
         """
         Args:
             get_blockchain_nonce: Функция для получения nonce из блокчейна
+
+        Phase 1.4: Uses event-based transaction tracking only.
+        Aggressive cleanup has been REMOVED for safety.
         """
         self.get_blockchain_nonce = get_blockchain_nonce
 
@@ -72,7 +75,8 @@ class NonceManager:
             'total_pending': 0,
             'total_confirmed': 0,
             'total_failed': 0,
-            'resyncs': 0
+            'resyncs': 0,
+            'event_confirmations': 0,  # Track event-based confirmations (Phase 1.4)
         }
 
     def get_next_nonce(self, address: str) -> int:
@@ -124,7 +128,7 @@ class NonceManager:
 
     def on_tx_confirmed(self, address: str, tx_hash: str, nonce: int) -> None:
         """
-        Вызывается когда транзакция подтверждена в блоке.
+        Вызывается когда транзакция подтверждена в блоке (Phase 1.4).
 
         Args:
             address: Адрес отправителя
@@ -145,6 +149,7 @@ class NonceManager:
 
                 self.pending_hashes.remove(tx_hash)
                 self.stats['total_confirmed'] += 1
+                self.stats['event_confirmations'] += 1  # NEW: track event-based confirmations
 
             # Чистим подтверждённые транзакции
             self._cleanup_confirmed(address)
@@ -222,11 +227,8 @@ class NonceManager:
         """
         Принудительная синхронизация с блокчейном.
 
-        CRITICAL FIX: Агрессивная очистка pending транзакций.
-        Если blockchain_nonce изменился, это означает что некоторые транзакции
-        были обработаны ИЛИ отклонены. Без механизма on_tx_confirmed() мы не можем
-        точно знать какие именно, поэтому безопаснее очистить ВСЕ pending TX
-        и начать с blockchain_nonce.
+        Phase 1.4: Uses ONLY event-based tracking. Aggressive cleanup REMOVED.
+        Relies on on_tx_confirmed() callbacks to clean up pending transactions.
         """
         try:
             # Получаем актуальный nonce из блокчейна
@@ -236,35 +238,25 @@ class NonceManager:
             old_blockchain = self.blockchain_nonce.get(address, 0)
             self.blockchain_nonce[address] = blockchain_nonce
 
-            # CRITICAL FIX: Если blockchain_nonce изменился (транзакции были обработаны),
-            # удаляем ВСЕ pending транзакции и начинаем заново
             if blockchain_nonce != old_blockchain:
-                # Подсчитываем сколько TX было обработано
                 processed_count = blockchain_nonce - old_blockchain
 
-                # Очищаем pending транзакции
-                if address in self.pending_txs:
-                    old_pending_count = len(self.pending_txs[address])
+                logger.info(f"Event-based sync for {address[:10]}...: "
+                           f"blockchain_nonce {old_blockchain} -> {blockchain_nonce} "
+                           f"({processed_count} txs processed)")
 
-                    # Удаляем ВСЕ pending TX из tracking
-                    for pending_tx in self.pending_txs[address]:
-                        if pending_tx.tx_hash in self.pending_hashes:
-                            self.pending_hashes.remove(pending_tx.tx_hash)
-                        # Считаем обработанные как confirmed
-                        if not pending_tx.confirmed and not pending_tx.failed:
-                            self.stats['total_confirmed'] += 1
+                # Чистим только подтверждённые транзакции
+                self._cleanup_confirmed(address)
 
-                    # Полностью очищаем pending queue
-                    del self.pending_txs[address]
+                # Пересчитываем pending_nonce на основе оставшихся pending TX
+                if address in self.pending_txs and len(self.pending_txs[address]) > 0:
+                    max_pending_nonce = max(tx.nonce for tx in self.pending_txs[address])
+                    self.pending_nonce[address] = max_pending_nonce + 1
+                else:
+                    self.pending_nonce[address] = blockchain_nonce
 
-                    logger.info(f"Aggressive cleanup for {address[:10]}...: "
-                               f"processed {processed_count} txs, cleared {old_pending_count} pending txs")
-
-                # Устанавливаем pending_nonce = blockchain_nonce (начинаем заново)
-                self.pending_nonce[address] = blockchain_nonce
             else:
-                # blockchain_nonce не изменился - оставляем pending TX как есть
-                # но пересчитываем pending_nonce на всякий случай
+                # blockchain_nonce не изменился - обновляем pending_nonce
                 if address in self.pending_txs and len(self.pending_txs[address]) > 0:
                     max_pending_nonce = max(tx.nonce for tx in self.pending_txs[address])
                     self.pending_nonce[address] = max_pending_nonce + 1
@@ -274,9 +266,9 @@ class NonceManager:
             self.last_sync[address] = time.time()
             self.stats['resyncs'] += 1
 
-            logger.info(f"Synced {address[:10]}...: blockchain_nonce={blockchain_nonce} "
-                       f"(was {old_blockchain}), pending_nonce={self.pending_nonce[address]}, "
-                       f"pending_count={len(self.pending_txs.get(address, []))}")
+            logger.debug(f"Synced {address[:10]}...: blockchain_nonce={blockchain_nonce} "
+                        f"(was {old_blockchain}), pending_nonce={self.pending_nonce[address]}, "
+                        f"pending_count={len(self.pending_txs.get(address, []))}")
 
         except Exception as e:
             logger.error(f"Failed to sync nonce for {address[:10]}...: {e}")

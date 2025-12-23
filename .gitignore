@@ -70,7 +70,9 @@ TODO_DEV.md
 README_TESTING.txt
 PHASE_1_4_TESTING_GUIDE.md
 проблемы.md
-
+*.md
+!README.md
+!README_ru.md
 # Test scripts and local guides (optional - keep for development)
 # Uncomment if you want these to be local only:
 # TEST_GUIDE.md

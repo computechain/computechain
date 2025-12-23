@@ -9,6 +9,7 @@ Exports blockchain metrics in Prometheus format.
 Metrics:
 - Block height, block time
 - Transaction count, TPS
+- Transaction lifecycle (confirmation time, pending count) (Phase 1.4)
 - Validator count, uptime, performance
 - Mempool size
 - Economic metrics (total supply, burned, minted)
@@ -62,6 +63,26 @@ transactions_per_block = Histogram(
 mempool_size = Gauge(
     'computechain_mempool_size',
     'Current mempool size',
+    registry=metrics_registry
+)
+
+# Transaction lifecycle metrics (Phase 1.4)
+tx_confirmation_time_seconds = Histogram(
+    'computechain_tx_confirmation_time_seconds',
+    'Time from transaction submission to confirmation',
+    buckets=[1, 5, 10, 30, 60, 120, 300, 600],
+    registry=metrics_registry
+)
+
+pending_transactions = Gauge(
+    'computechain_pending_transactions',
+    'Number of pending transactions',
+    registry=metrics_registry
+)
+
+event_confirmations_total = Counter(
+    'computechain_event_confirmations_total',
+    'Total transaction confirmations via events',
     registry=metrics_registry
 )
 
@@ -220,8 +241,8 @@ def update_metrics(chain, mempool_instance=None):
         chain: Blockchain instance
         mempool_instance: Optional mempool instance
     """
-    from protocol.config.economic_model import TREASURY_ADDRESS
-    from protocol.config.params import CURRENT_NETWORK
+    from computechain.protocol.config.economic_model import TREASURY_ADDRESS
+    from computechain.protocol.config.params import CURRENT_NETWORK
 
     state = chain.state
 
@@ -231,6 +252,16 @@ def update_metrics(chain, mempool_instance=None):
     # Mempool
     if mempool_instance:
         mempool_size.set(mempool_instance.size())
+
+    # Transaction lifecycle metrics (Phase 1.4)
+    try:
+        from computechain.blockchain.core.tx_receipt import tx_receipt_store
+        pending_count = sum(1 for receipt in tx_receipt_store.receipts.values()
+                          if receipt.status == 'pending')
+        pending_transactions.set(pending_count)
+    except Exception as e:
+        # If receipt store not available, set to 0
+        pending_transactions.set(0)
 
     # Validator metrics
     validators = state.get_all_validators()

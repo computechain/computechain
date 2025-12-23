@@ -137,7 +137,7 @@ if pgrep -f "tx_generator.py" > /dev/null; then
     fi
 fi
 
-# Start transaction generator
+# Start transaction generator (Phase 1.4: Event-based tracking only, aggressive cleanup REMOVED)
 echo ""
 echo "Starting transaction generator ($MODE mode)..."
 python3 scripts/testing/tx_generator.py \

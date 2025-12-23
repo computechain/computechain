@@ -1,0 +1,2 @@
+cpu_count,cpu_percent,disk_percent,disk_read_mb,disk_total_gb,disk_used_gb,disk_write_mb,memory_percent,memory_total_gb,memory_used_gb,net_recv_mb,net_sent_mb,process_count,swap_percent,swap_used_gb
+32,76.9,61.0,8459.2109375,231.16841888427734,134.61455917358398,19940.5908203125,23.3,30.430973052978516,7.101249694824219,1624.1867895126343,585.4264707565308,620,0.0,0.0

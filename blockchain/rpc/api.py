@@ -260,16 +260,52 @@ async def get_jailed_validators():
 async def send_tx(tx: Transaction):
     if not chain or not mempool:
         raise HTTPException(status_code=503, detail="Node not initialized")
-    
+
     try:
         # Basic validation via Mempool
         added, reason = mempool.add_transaction(tx)
         if not added:
              return {"tx_hash": tx.hash_hex, "status": "rejected", "error": reason}
+
+        # Track transaction as pending (Phase 1.4)
+        from blockchain.core.tx_receipt import tx_receipt_store
+        tx_receipt_store.add_pending(tx.hash_hex)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
     return {"tx_hash": tx.hash_hex, "status": "received"}
+
+@app.get("/tx/{tx_hash}/receipt")
+async def get_tx_receipt(tx_hash: str):
+    """
+    Get transaction receipt (Phase 1.4).
+
+    Returns transaction status: pending, confirmed, or failed.
+    """
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+
+    try:
+        from blockchain.core.tx_receipt import tx_receipt_store
+
+        receipt = tx_receipt_store.get(tx_hash)
+        if not receipt:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+
+        # Calculate confirmations if confirmed
+        confirmations = None
+        if receipt.status == 'confirmed' and receipt.block_height is not None:
+            confirmations = tx_receipt_store.get_confirmations(tx_hash, chain.height)
+
+        response = receipt.to_dict()
+        if confirmations is not None:
+            response['confirmations'] = confirmations
+
+        return response
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Receipt error: {str(e)}")
 
 @app.get("/metrics")
 async def get_metrics():

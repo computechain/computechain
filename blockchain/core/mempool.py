@@ -14,8 +14,10 @@ logger = logging.getLogger(__name__)
 MAX_TX_PER_SENDER = 1000  # Increased from 64 to handle high-load scenarios
 
 class Mempool:
-    def __init__(self, max_size: int = 100000):  # Increased from 5000 to handle high-load
+    def __init__(self, max_size: int = 100000, tx_ttl_seconds: int = 3600):  # Increased from 5000 to handle high-load
         self.transactions: Dict[str, Transaction] = {} # tx_hash -> Transaction
+        self.tx_timestamps: Dict[str, float] = {}  # tx_hash -> timestamp (Phase 1.4 TTL)
+        self.tx_ttl_seconds = tx_ttl_seconds  # Time-to-live for transactions (default: 1 hour)
         self.max_size = max_size
         self._lock = threading.Lock()
 
@@ -92,8 +94,10 @@ class Mempool:
             except Exception as e:
                  logger.warning(f"Rejecting tx {tx_hash[:8]}: crypto error: {e}")
                  return False, f"crypto_error: {e}"
-            
+
+            import time
             self.transactions[tx_hash] = tx
+            self.tx_timestamps[tx_hash] = time.time()  # Track timestamp for TTL (Phase 1.4)
             logger.info(f"Tx added to mempool: {tx_hash[:8]}...")
             return True, "added"
 
@@ -113,6 +117,8 @@ class Mempool:
                 tx_hash = tx.hash_hex
                 if tx_hash in self.transactions:
                     del self.transactions[tx_hash]
+                    if tx_hash in self.tx_timestamps:  # Also remove timestamp (Phase 1.4 TTL)
+                        del self.tx_timestamps[tx_hash]
 
     def size(self) -> int:
         with self._lock:
@@ -142,3 +148,43 @@ class Mempool:
                 logger.info(f"Pruned {len(stale_txs)} stale transactions from mempool")
 
             return len(stale_txs)
+
+    def cleanup_expired(self) -> int:
+        """
+        Removes transactions that exceeded TTL (Time-To-Live).
+
+        Phase 1.4: Prevents mempool from accumulating old pending transactions.
+
+        Returns:
+            The number of expired transactions removed.
+        """
+        import time
+
+        with self._lock:
+            now = time.time()
+            expired_txs = []
+
+            # Find expired transactions
+            for tx_hash, timestamp in self.tx_timestamps.items():
+                age = now - timestamp
+                if age > self.tx_ttl_seconds:
+                    expired_txs.append(tx_hash)
+
+            # Remove expired transactions
+            for tx_hash in expired_txs:
+                if tx_hash in self.transactions:
+                    del self.transactions[tx_hash]
+                if tx_hash in self.tx_timestamps:
+                    del self.tx_timestamps[tx_hash]
+
+                # Mark as expired in receipt store
+                try:
+                    from computechain.blockchain.core.tx_receipt import tx_receipt_store
+                    tx_receipt_store.mark_expired(tx_hash)
+                except Exception as e:
+                    logger.debug(f"Could not mark tx {tx_hash[:8]} as expired: {e}")
+
+            if expired_txs:
+                logger.info(f"Cleaned up {len(expired_txs)} expired transactions from mempool (TTL={self.tx_ttl_seconds}s)")
+
+            return len(expired_txs)

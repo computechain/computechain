@@ -52,6 +52,8 @@ class BlockProposer:
                 now = int(time.time())
                 if now - self.last_prune_time >= 30:
                     try:
+                        # Phase 1.4: Cleanup expired TXs before pruning stale
+                        self.mempool.cleanup_expired()
                         self.mempool.prune_stale_transactions(self.chain.state)
                         self.last_prune_time = now
                     except Exception as e:
@@ -188,6 +190,8 @@ class BlockProposer:
 
             # Prune stale transactions (transactions with old nonces)
             try:
+                # Phase 1.4: Cleanup expired TXs before pruning stale
+                self.mempool.cleanup_expired()
                 self.mempool.prune_stale_transactions(self.chain.state)
             except Exception as e:
                 logger.error(f"Error pruning stale transactions: {e}")

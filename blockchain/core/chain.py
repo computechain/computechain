@@ -435,6 +435,21 @@ class Blockchain:
         except Exception as e:
             logger.warning(f"Failed to update metrics: {e}")
 
+        # Emit transaction confirmation events (Phase 1.4)
+        try:
+            from blockchain.core.events import event_bus
+            from blockchain.core.tx_receipt import tx_receipt_store
+            for tx in block.txs:
+                # Mark transaction as confirmed in receipt store
+                tx_receipt_store.mark_confirmed(tx.hash(), block.header.height)
+                # Emit event for subscribers (e.g., NonceManager)
+                event_bus.emit('tx_confirmed',
+                              tx_hash=tx.hash(),
+                              block_height=block.header.height,
+                              tx=tx)
+        except Exception as e:
+            logger.warning(f"Failed to emit tx_confirmed events: {e}")
+
         # Create snapshot if enabled (Phase 1.3)
         if self.enable_snapshots and self.snapshot_manager:
             should_snapshot = False

@@ -1,4 +1,4 @@
-from protocol.config.economic_model import ECONOMIC_CONFIG
+from ...protocol.config.economic_model import ECONOMIC_CONFIG
 
 
 def calculate_block_reward(height: int) -> int:
