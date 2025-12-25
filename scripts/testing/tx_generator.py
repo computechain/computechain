@@ -36,6 +36,7 @@ from computechain.protocol.crypto.keys import sign, public_key_from_private
 from computechain.protocol.crypto.hash import sha256
 from computechain.protocol.config.params import DECIMALS
 from computechain.scripts.testing.nonce_manager import NonceManager
+from computechain.scripts.testing.sse_client import SSEClient
 
 # Logging setup
 logging.basicConfig(
@@ -73,10 +74,13 @@ class TxGenerator:
         # Aggressive cleanup has been REMOVED for safety
         self.nonce_manager = NonceManager(self._get_nonce)
 
+        # SSE client for real-time event subscription (Phase 1.4 fixed)
+        self.sse_client = SSEClient(node_url)
+
         # Set running flag BEFORE starting threads
         self.running = True
 
-        # Start HTTP polling for transaction confirmations (Phase 1.4)
+        # Subscribe to events via HTTP SSE (Phase 1.4 - cross-process EventBus)
         self._subscribe_to_events()
         logger.info("Event-based transaction tracking ENABLED (Phase 1.4)")
 
@@ -248,19 +252,63 @@ class TxGenerator:
         """
         Subscribe to blockchain events for transaction lifecycle tracking (Phase 1.4).
 
-        Uses HTTP polling of Transaction Receipt API (/tx/{hash}/receipt) to check
-        TX confirmation status. This works across process boundaries (unlike in-process EventBus).
+        Uses HTTP Server-Sent Events (SSE) for real-time event notifications.
+        This works across process boundaries (unlike in-process EventBus).
         """
-        import threading
+        # Subscribe to tx_confirmed events
+        def on_tx_confirmed(**data):
+            """Handle tx_confirmed event from SSE."""
+            tx_hash = data.get('tx_hash')
+            block_height = data.get('block_height')
 
-        # Start background thread for polling receipts
-        self.receipt_poll_thread = threading.Thread(
-            target=self._poll_transaction_receipts,
-            daemon=True,
-            name="TxReceiptPoller"
-        )
-        self.receipt_poll_thread.start()
-        logger.info("Started TX receipt polling thread (HTTP-based event tracking)")
+            if not tx_hash:
+                return
+
+            # Find the pending TX to get address and nonce
+            with self.nonce_manager.lock:
+                for addr, pending_txs in self.nonce_manager.pending_txs.items():
+                    for ptx in pending_txs:
+                        if ptx.tx_hash == tx_hash and not ptx.confirmed:
+                            # Notify NonceManager
+                            self.nonce_manager.on_tx_confirmed(
+                                addr,
+                                tx_hash,
+                                ptx.nonce
+                            )
+                            logger.info(f"✅ TX confirmed via SSE: {tx_hash[:16]}... (block {block_height})")
+                            return
+
+        # Subscribe to tx_failed events
+        def on_tx_failed(**data):
+            """Handle tx_failed event from SSE."""
+            tx_hash = data.get('tx_hash')
+            error = data.get('error', 'unknown')
+
+            if not tx_hash:
+                return
+
+            # Find the pending TX to get address and nonce
+            with self.nonce_manager.lock:
+                for addr, pending_txs in self.nonce_manager.pending_txs.items():
+                    for ptx in pending_txs:
+                        if ptx.tx_hash == tx_hash and not ptx.failed:
+                            # Notify NonceManager
+                            self.nonce_manager.on_tx_failed(
+                                addr,
+                                tx_hash,
+                                ptx.nonce,
+                                error
+                            )
+                            logger.warning(f"❌ TX failed via SSE: {tx_hash[:16]}... (error: {error})")
+                            return
+
+        # Register event handlers
+        self.sse_client.subscribe("tx_confirmed", on_tx_confirmed)
+        self.sse_client.subscribe("tx_failed", on_tx_failed)
+
+        # Start SSE client
+        self.sse_client.start()
+        logger.info("✅ Event-based transaction tracking via HTTP SSE ENABLED (Phase 1.4)")
 
     def _poll_transaction_receipts(self):
         """

@@ -22,6 +22,8 @@ from .state import AccountState
 from .accounts import Account
 from .rewards import calculate_block_reward
 from ..consensus.engine import ConsensusEngine
+from .events import event_bus  # Import at module level!
+from .tx_receipt import tx_receipt_store  # Import at module level!
 
 logger = logging.getLogger(__name__)
 
@@ -437,8 +439,12 @@ class Blockchain:
 
         # Emit transaction confirmation events (Phase 1.4)
         try:
-            from blockchain.core.events import event_bus
-            from blockchain.core.tx_receipt import tx_receipt_store
+            # event_bus and tx_receipt_store are now imported at module level
+
+            # Log EventBus state for debugging (only once per block)
+            if block.txs:
+                logger.info(f"Block {block.header.height}: EventBus ID={id(event_bus)}, listeners={list(event_bus.listeners.keys())}, tx_confirmed_count={len(event_bus.listeners.get('tx_confirmed', []))}")
+
             for tx in block.txs:
                 # Mark transaction as confirmed in receipt store
                 tx_receipt_store.mark_confirmed(tx.hash(), block.header.height)

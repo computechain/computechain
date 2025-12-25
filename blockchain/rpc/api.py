@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from ...protocol.types.tx import Transaction
@@ -8,8 +8,12 @@ from ...protocol.types.block import Block
 from ...protocol.types.validator import Validator
 from ..core.chain import Blockchain
 from ..core.mempool import Mempool
+from ..core.events import event_bus  # Import at module level!
 import logging
 import os
+import asyncio
+import json
+from queue import Queue, Empty
 
 app = FastAPI(title="ComputeChain Node RPC")
 
@@ -23,6 +27,10 @@ app.add_middleware(
 )
 chain: Optional[Blockchain] = None
 mempool: Optional[Mempool] = None
+
+# Event streaming for cross-process EventBus (Phase 1.4)
+event_queues: List[Queue] = []  # List of client queues for SSE
+logger = logging.getLogger(__name__)
 
 class TxResponse(BaseModel):
     tx_hash: str
@@ -384,9 +392,137 @@ async def get_snapshot_info(height: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Snapshot error: {str(e)}")
 
+@app.get("/events/stream")
+async def event_stream(request: Request):
+    """
+    Server-Sent Events (SSE) endpoint for real-time blockchain events.
+
+    Phase 1.4: Enables cross-process EventBus communication.
+    tx_generator and other clients can subscribe to events via HTTP.
+
+    Events:
+    - tx_confirmed: Transaction confirmed in block
+    - tx_failed: Transaction failed validation
+    - block_created: New block added to chain
+    """
+    client_queue = Queue(maxsize=100)
+    event_queues.append(client_queue)
+
+    async def event_generator():
+        try:
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    logger.info("SSE client disconnected")
+                    break
+
+                try:
+                    # Non-blocking get from queue
+                    event_data = client_queue.get_nowait()
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                except Empty:
+                    # No events, send keep-alive ping
+                    yield ": ping\n\n"
+                    await asyncio.sleep(15)  # 15 second keep-alive
+
+        except Exception as e:
+            logger.error(f"SSE stream error: {e}")
+        finally:
+            # Remove client queue on disconnect
+            if client_queue in event_queues:
+                event_queues.remove(client_queue)
+            logger.info(f"SSE client removed. Active clients: {len(event_queues)}")
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disable nginx buffering
+        }
+    )
+
+
+def broadcast_event(event_type: str, **data):
+    """
+    Broadcast event to all connected SSE clients.
+    Called by EventBus listeners.
+    """
+    event_data = {
+        "type": event_type,
+        **data
+    }
+
+    logger.info(f"Broadcasting SSE event: {event_type} to {len(event_queues)} clients")
+
+    # Send to all connected clients
+    dead_queues = []
+    for q in event_queues:
+        try:
+            q.put_nowait(event_data)
+            logger.info(f"Event queued successfully: {event_type}")
+        except Exception as e:
+            logger.warning(f"Failed to queue event: {e}")
+            dead_queues.append(q)
+
+    # Clean up dead queues
+    for q in dead_queues:
+        if q in event_queues:
+            event_queues.remove(q)
+
+
+def setup_event_bridge(blockchain_instance: Blockchain):
+    """
+    Connect blockchain EventBus to HTTP SSE.
+    Subscribe to events and broadcast them to HTTP clients.
+    """
+    # event_bus is now imported at module level
+    logger.info(f"SSE Bridge: EventBus instance ID: {id(event_bus)}")
+    logger.info(f"SSE Bridge: EventBus listeners before setup: {event_bus.listeners}")
+
+    def on_tx_confirmed(**data):
+        # Filter out non-JSON-serializable objects (e.g., Transaction objects)
+        serializable_data = {
+            "tx_hash": data.get("tx_hash"),
+            "block_height": data.get("block_height")
+        }
+        logger.info(f"SSE Bridge: tx_confirmed callback called for {serializable_data.get('tx_hash', '?')[:16]}...")
+        broadcast_event("tx_confirmed", **serializable_data)
+
+    def on_tx_failed(**data):
+        # Filter out non-JSON-serializable objects
+        serializable_data = {
+            "tx_hash": data.get("tx_hash"),
+            "error": data.get("error", "Unknown error")
+        }
+        broadcast_event("tx_failed", **serializable_data)
+
+    def on_block_created(**data):
+        # Filter out non-JSON-serializable objects (e.g., Block objects)
+        serializable_data = {
+            "block_height": data.get("block_height"),
+            "block_hash": data.get("block_hash")
+        }
+        broadcast_event("block_created", **serializable_data)
+
+    event_bus.subscribe("tx_confirmed", on_tx_confirmed)
+    logger.info(f"SSE Bridge: Subscribed to tx_confirmed, EventBus listeners: {event_bus.listeners}")
+    event_bus.subscribe("tx_failed", on_tx_failed)
+    logger.info(f"SSE Bridge: Subscribed to tx_failed, EventBus listeners: {event_bus.listeners}")
+    event_bus.subscribe("block_created", on_block_created)
+    logger.info(f"SSE Bridge: Subscribed to block_created, EventBus listeners: {event_bus.listeners}")
+
+    logger.info("✅ EventBus → HTTP SSE bridge initialized")
+
+
 def start_rpc_server(blockchain_instance: Blockchain, mempool_instance: Mempool, host: str = "0.0.0.0", port: int = 8000):
     global chain, mempool
     chain = blockchain_instance
     mempool = mempool_instance
+
+    # Setup EventBus → SSE bridge (Phase 1.4)
+    setup_event_bridge(blockchain_instance)
+
     import uvicorn
     uvicorn.run(app, host=host, port=port)

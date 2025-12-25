@@ -4,6 +4,7 @@ from ...protocol.types.tx import Transaction
 from ...protocol.crypto.keys import verify
 from ...protocol.crypto.addresses import address_from_pubkey
 from ...protocol.config.params import GAS_PER_TYPE, CURRENT_NETWORK
+from .events import event_bus  # Import at module level!
 import logging
 
 if TYPE_CHECKING:
@@ -177,10 +178,15 @@ class Mempool:
                 if tx_hash in self.tx_timestamps:
                     del self.tx_timestamps[tx_hash]
 
-                # Mark as expired in receipt store
+                # Mark as expired in receipt store and emit event
                 try:
                     from computechain.blockchain.core.tx_receipt import tx_receipt_store
                     tx_receipt_store.mark_expired(tx_hash)
+
+                    # Emit tx_failed event to notify subscribers (e.g., NonceManager)
+                    event_bus.emit('tx_failed',
+                                  tx_hash=tx_hash,
+                                  error="Transaction expired (TTL exceeded)")
                 except Exception as e:
                     logger.debug(f"Could not mark tx {tx_hash[:8]} as expired: {e}")
 
