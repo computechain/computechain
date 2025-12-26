@@ -1,326 +1,348 @@
-# 🧪 Руководство по тестированию Validator Performance System
+# 🧪 ComputeChain Testing Guide
 
-## 📋 Подготовка
+**Last Updated:** December 25, 2025
 
-Убедитесь что вы в директории `computechain/`:
-```bash
-cd /home/pc205/128/computechain
-```
+## 📋 Overview
 
-У вас теперь есть 3 скрипта:
-- `start_node_a.sh` - запуск первичной ноды
-- `start_node_b.sh` - запуск вторичной ноды
-- `open_dashboard.sh` - открыть dashboard в браузере
+ComputeChain has comprehensive testing infrastructure:
+- **Unit Tests**: Core functionality testing (25+ tests)
+- **Load Testing**: Transaction throughput testing (configurable TPS)
+- **Long-Duration Tests**: 24-hour stability tests
+- **Event System Testing**: SSE event delivery verification
 
 ---
 
-## 🚀 Сценарий тестирования
+## 🧪 Unit Tests
 
-### Шаг 1: Запуск Node A (Terminal 1)
+### Run All Tests
 
 ```bash
-# Очистить старые данные (опционально)
-./start_node_a.sh --clean
+# Run all unit tests
+./run_tests.sh
 
-# Или просто запустить
-./start_node_a.sh
+# Run with verbose output
+./run_tests.sh -v
+
+# Run specific test file
+./run_tests.sh computechain/tests/test_core.py -v
+
+# Run specific test
+./run_tests.sh computechain/tests/test_core.py::test_delegate_undelegate_flow -v
 ```
 
-**Что происходит:**
-- Создаётся genesis validator с 2000 CPC stake
-- Инициализируется faucet с balans'ом
-- Нода начинает создавать блоки
-- RPC доступен на http://localhost:8000
-- Dashboard доступен на http://localhost:8000/
+### Test Coverage
 
-**Дождитесь:** Несколько блоков (height > 5)
+✅ **Core Blockchain**
+- Account state management
+- Transaction validation
+- Block creation and validation
+- State root calculation
+
+✅ **Staking & Delegation**
+- STAKE/UNSTAKE transactions
+- DELEGATE/UNDELEGATE flow
+- Unbonding period (21 days)
+- Reward distribution to delegators
+- Commission calculations
+
+✅ **Validator System**
+- Performance tracking (uptime, missed blocks)
+- Graduated slashing (5% → 10% → 100%)
+- Jailing and unjailing
+- Validator metadata updates
+- Min uptime requirement (75%)
+
+✅ **Economic Invariants**
+- Supply conservation
+- Non-negative balances
+- Staking limits enforcement
+- Burn/mint tracking
 
 ---
 
-### Шаг 2: Открыть Dashboard (Terminal 3)
+## 🔥 Load Testing
+
+### Quick Start
 
 ```bash
-./open_dashboard.sh
+# Low load test (1-5 TPS) - 24 hours
+./start_test.sh low 24
+
+# Medium load test (10-50 TPS) - 24 hours
+./start_test.sh medium 24
+
+# High load test (100-500 TPS) - NOT RECOMMENDED
+# Current architecture supports ~10 TPS sustained
+# High load causes nonce gaps and mempool saturation
 ```
 
-Или вручную откройте в браузере:
-```
-http://localhost:8000/
-```
+### Test Modes
 
-**Что увидите:**
-- 1 активный валидатор
-- Performance Score: 100%
-- Блоки создаются регулярно
-- Epoch transition каждые 10 блоков
+| Mode | TPS Range | Use Case | Status |
+|------|-----------|----------|--------|
+| **low** | 1-5 | Long-duration stability test | ✅ Stable |
+| **medium** | 10-50 | Finding performance limits | ⚠️ Testing needed |
+| **high** | 100-500 | Stress test | ❌ Not supported yet |
 
----
+### What start_test.sh Does
 
-### Шаг 3: Запуск Node B (Terminal 2)
+1. **Cleanup**: Stops all running validators and tx_generator
+2. **Initialize**: Creates 5 validators with separate data directories
+3. **Start Validators**: Launches validators on ports 8000-8004
+4. **Start Generator**: Launches tx_generator with specified mode and duration
+5. **Monitoring**: Outputs status and log locations
+
+### Monitoring Test Progress
 
 ```bash
-./start_node_b.sh
+# Check validator logs
+tail -f logs/validator_1.log
+
+# Check tx_generator logs
+tail -f logs/tx_generator_low_*.log
+
+# View Prometheus metrics
+curl http://localhost:8000/metrics
+
+# Check specific metrics
+curl http://localhost:8000/metrics | grep computechain_event_confirmations_total
+curl http://localhost:8000/metrics | grep computechain_block_height
+curl http://localhost:8000/metrics | grep computechain_tps
 ```
 
-**Интерактивный процесс:**
-1. Скрипт проверит что Node A работает ✅
-2. Спросит: "Create NEW validator for Node B? (y/n)"
-3. Нажмите **Y** для создания нового валидатора
+### Test Results Interpretation
 
-**Что происходит автоматически:**
-- Импорт faucet key из Node A
-- Создание alice key
-- Отправка 3000 CPC alice'у
-- Стейкинг 2000 CPC (alice становится валидатором)
-- Экспорт ключа в Node B
-- Запуск Node B с подключением к Node A
+**Successful Test Indicators:**
+- ✅ `event_confirmations_total` increasing steadily
+- ✅ No "Pending TX timeout" warnings
+- ✅ `current_pending` stays low (<100)
+- ✅ Blocks contain transactions (not empty)
+- ✅ No crashes or errors in validator logs
 
-**Дождитесь:** Epoch transition (следующие 10 блоков)
+**Problem Indicators:**
+- ❌ `event_confirmations_total` stops increasing
+- ❌ Many "Pending TX timeout" warnings
+- ❌ `current_pending` grows continuously (>1000)
+- ❌ Empty blocks being created
+- ❌ Validator crashes or errors
 
 ---
 
-### Шаг 4: Мониторинг в Dashboard
+## 📊 Performance Benchmarks
 
-Обновите dashboard (или подождите 10 сек):
+### Current Architecture (Phase 1 - Dec 2025)
 
-**Что увидите:**
-```
-Active Validators: 2
-Leaderboard:
-  #1 Node A - Score: 100% - Power: 2000
-  #2 Node B - Score: 100% - Power: 2000
-```
+**Measured Performance:**
+- **Sustained TPS**: ~10 TPS
+- **Block Time**: 10 seconds
+- **Max TX/Block**: 100
+- **Consensus**: Tendermint BFT (instant finality)
+- **Validation**: Sequential (single-threaded)
 
----
+**Test Results:**
+- ✅ Low load (1-5 TPS): Stable for 12+ hours
+- ⏳ Medium load (10-50 TPS): Testing in progress
+- ❌ High load (100-500 TPS): Nonce gaps, mempool saturation
 
-## 🧪 Тест 1: Missed Blocks Detection
+**User Capacity Estimates:**
+- At 10 TPS: ~860K transactions/day
+- 1 TX/user/day: supports ~860K users
+- 10 TX/user/day: supports ~86K users
 
-### Действие: Остановите Node B
+### Future Targets
 
-В Terminal 2 нажмите **Ctrl+C** чтобы остановить Node B.
-
-### Ожидаемый результат:
-
-Через несколько блоков в Dashboard:
-```
-Validator Node B:
-  Missed Blocks: 3, 4, 5... (растёт)
-  Performance Score: падает
-  Status: Active → Inactive (после 10 пропущенных)
-```
-
-В логах Node A увидите:
-```
-⚠️  Validator cpcvalcons1xxx missed block at height X (total consecutive: 5)
-```
+| Phase | Target TPS | Key Improvements |
+|-------|-----------|------------------|
+| 1.4.1 | 100 TPS | Block time 5s, 500 TX/block, parallel validation |
+| 1.4.2 | 300 TPS | Block time 3s, 1000 TX/block, state caching |
+| 1.4.3 | 1000+ TPS | Parallelization, Layer 2, sharding |
 
 ---
 
-## 🔥 Тест 2: Jail Mechanism
+## 🔍 Event System Testing
 
-### Условие:
-Валидатор пропустил **10+ блоков** подряд
+### SSE Event Verification
 
-### Ожидаемый результат:
+The blockchain emits real-time events via Server-Sent Events (SSE):
 
-**В Dashboard:**
-```
-Jailed Validators: 1
-  - Node B validator
-  - Blocks remaining: 100
-  - Penalty: 5% stake slashed
-  - Jail count: 1
-```
+**Verify SSE endpoint:**
+```bash
+# Connect to SSE stream (will show events as they occur)
+curl -N http://localhost:8000/events/stream
 
-**В логах Node A:**
-```
-⚠️  JAILED: Validator cpcvalcons1xxx
-    Penalty: 100000000000000000000 (5%)
-    Jail #1 until block XXX
-    Remaining power: 1900000000000000000000
+# You should see:
+# : ping (keep-alive every 15 seconds)
+# data: {"type":"tx_confirmed","tx_hash":"...","block_height":123}
+# data: {"type":"block_created","block_height":124,"block_hash":"..."}
 ```
 
-**Leaderboard:**
+**Check event metrics:**
+```bash
+# Total events emitted
+curl http://localhost:8000/metrics | grep event_confirmations_total
+
+# Should increase with each confirmed transaction
 ```
-#1 Node A - Score: 100% - Active ✅
-#2 Node B - Score: <75% - Jailed 🔒
+
+### Transaction Lifecycle
+
 ```
+1. TX Sent → mempool
+   ↓
+2. TX Included in Block
+   ↓
+3. Event: tx_confirmed emitted
+   ↓
+4. SSE clients receive event
+   ↓
+5. NonceManager updates state
+```
+
+**TTL (Time-To-Live):**
+- Transactions expire after 1 hour in mempool
+- Expired TX emit `tx_failed` event
+- NonceManager receives event and unblocks nonce
 
 ---
 
-## 🚀 Тест 3: Validator Recovery
+## 🛠 Manual Testing Scenarios
 
-### Действие: Перезапустите Node B
+### Scenario 1: Basic Node Operation
 
 ```bash
-# В Terminal 2
-./start_node_b.sh
+# 1. Start a single validator
+./run_node.py --datadir data/validator_1 init
+./run_node.py --datadir data/validator_1 run
+
+# 2. Check it's working
+curl http://localhost:8000/chain/info
+curl http://localhost:8000/validators
+
+# 3. View dashboard
+open http://localhost:8000/
 ```
 
-Скрипт спросит создавать ли нового валидатора - нажмите **N** (использовать существующего)
+### Scenario 2: Multi-Validator Setup
 
-### Ожидаемый результат:
-
-Node B подключится и начнёт синхронизацию. Но валидатор останется **в jail** до конца срока (100 блоков).
-
-После окончания jail'а (100 блоков):
-- Валидатор автоматически освобождается
-- Может снова участвовать в epoch transition
-- Performance score начнёт расти при создании блоков
-
----
-
-## ⚡ Тест 4: Ejection (Permanent Ban)
-
-### Условие:
-Валидатор получил **3 jail'а**
-
-### Как воспроизвести:
-1. Запустите Node B
-2. Дождитесь epoch transition (войдёт в active set)
-3. Остановите Node B - получит 1й jail
-4. Подождите 100 блоков (освободится)
-5. Запустите Node B
-6. Повторите пункты 2-5 ещё 2 раза
-
-### Ожидаемый результат после 3го jail'а:
-
-**В логах:**
-```
-❌ EJECTED: Validator cpcvalcons1xxx (too many jails: 3)
-   Full slash applied, power = 0
-```
-
-**В Dashboard:**
-```
-Validator Node B:
-  Status: Ejected ❌
-  Power: 0
-  Jail Count: 3
-  Total Penalties: 300000000000000000000 (15%)
-```
-
-Валидатор **навсегда** исключён из сети. Нужно создавать нового.
-
----
-
-## 📊 Полезные команды для мониторинга
-
-### Проверить статус через API:
 ```bash
-# Общий статус
-curl -s http://localhost:8000/status | python3 -m json.tool
+# Start 5 validators (automated)
+./start_test.sh low 1  # 1 hour test
 
-# Leaderboard
-curl -s http://localhost:8000/validators/leaderboard | python3 -m json.tool
+# Check P2P connectivity
+curl http://localhost:8000/peers
+curl http://localhost:8001/peers
 
-# Jailed валидаторы
-curl -s http://localhost:8000/validators/jailed | python3 -m json.tool
-
-# Конкретный валидатор
-ADDR="cpcvalcons1..."
-curl -s http://localhost:8000/validator/$ADDR/performance | python3 -m json.tool
+# Verify all validators are active
+curl http://localhost:8000/validators | jq '.[] | {address, is_active}'
 ```
 
-### Проверить логи:
+### Scenario 3: Transaction Stress Test
+
 ```bash
-# Последние события
-tail -f /tmp/node_test.log | grep -E "(Epoch|Validator|JAILED|EJECTED|missed)"
-```
+# Generate transactions manually
+python3 scripts/testing/tx_generator.py --mode medium --duration 3600
 
----
-
-## 🎯 Ожидаемое поведение системы
-
-### ✅ Нормальная работа:
-- Валидаторы с uptime >90% имеют score ~1.0
-- Active set выбирается по performance_score
-- Блоки создаются стабильно каждые 10 секунд
-
-### ⚠️ При проблемах:
-- Missed blocks детектируются сразу
-- Jail после 10 пропущенных блоков подряд
-- Slashing 5% stake за каждый jail
-- Ejection после 3 jails
-
-### 📈 Performance Score формула:
-```
-score = 0.6 × uptime + 0.2 × stake_ratio + 0.2 × (1 - penalty_ratio)
-
-где:
-  uptime = blocks_proposed / blocks_expected
-  stake_ratio = validator_power / total_network_power
-  penalty_ratio = total_penalties / validator_power (max 0.5)
+# Monitor in real-time
+watch -n 1 'curl -s http://localhost:8000/metrics | grep tps'
 ```
 
 ---
 
 ## 🐛 Troubleshooting
 
-### Node A не запускается
+### Issue: No transactions confirmed
+
+**Symptoms:**
+- `event_confirmations_total` stays at 0
+- Blocks are empty
+- `current_pending` grows
+
+**Solutions:**
 ```bash
-# Проверьте что нет старых процессов
+# 1. Check EventBus bridge initialized
+grep "EventBus → HTTP SSE bridge initialized" logs/validator_1.log
+
+# 2. Check SSE client connected
+grep "Connected to SSE stream" logs/tx_generator_*.log
+
+# 3. Verify events are emitted
+grep "tx_confirmed callback called" logs/validator_1.log
+```
+
+### Issue: Nonce gaps
+
+**Symptoms:**
+- Many "Pending TX timeout" warnings
+- TPS drops to 0
+- Transactions stuck
+
+**Solutions:**
+- Use lower TPS mode (low instead of medium)
+- Current architecture limit is ~10 TPS
+- See ROADMAP.md Phase 1.4 for scalability improvements
+
+### Issue: Validator crashes
+
+**Symptoms:**
+- Process exits unexpectedly
+- "Connection refused" errors
+
+**Solutions:**
+```bash
+# Check logs for errors
+tail -100 logs/validator_1.log | grep -i error
+
+# Check system resources
+htop  # CPU/RAM usage
+df -h # Disk space
+```
+
+---
+
+## 📚 Related Documentation
+
+- **[ROADMAP.md](./ROADMAP.md)** - Performance targets and scalability roadmap
+- **[QUICK_START.md](./QUICK_START.md)** - Basic node setup
+- **[VALIDATOR_PERFORMANCE_GUIDE.md](./VALIDATOR_PERFORMANCE_GUIDE.md)** - Validator optimization
+- **[GAS_MODEL.md](./GAS_MODEL.md)** - Gas costs and economics
+
+---
+
+## 🔬 Advanced Testing
+
+### Custom Transaction Generator
+
+```python
+from scripts.testing.tx_generator import TransactionGenerator
+
+# Create custom generator
+generator = TransactionGenerator(
+    node_url="http://localhost:8000",
+    mode="custom"  # 1-100 TPS random
+)
+
+# Run for specific duration
+generator.run(duration_seconds=3600)  # 1 hour
+```
+
+### Load Test Analysis
+
+After running a 24-hour test:
+
+```bash
+# 1. Count total transactions
+grep "TX confirmed via SSE" logs/tx_generator_*.log | wc -l
+
+# 2. Calculate average TPS
+# total_tx / duration_seconds
+
+# 3. Check for issues
+grep "WARNING\|ERROR" logs/*.log | wc -l
+
+# 4. Verify no crashes
 ps aux | grep run_node.py
-kill -9 <PID>
-
-# Очистите данные и запустите заново
-./start_node_a.sh --clean
-```
-
-### Node B не подключается
-```bash
-# Проверьте что Node A работает
-curl http://localhost:8000/status
-
-# Проверьте P2P порт
-netstat -tlnp | grep 9000
-```
-
-### Dashboard не открывается
-```bash
-# Проверьте что node работает
-curl http://localhost:8000/
-
-# Если нет - перезапустите node
-```
-
-### Валидатор не появляется в active set
-- Проверьте stake >= 1000 CPC
-- Подождите epoch transition (10 блоков)
-- Проверьте что не в jail
-
----
-
-## 📝 Заметки
-
-- **Epoch length**: 10 блоков (настраивается в params.py)
-- **Block time**: 10 секунд
-- **Max validators**: 5 (devnet)
-- **Min stake**: 1000 CPC
-- **Jail duration**: 100 блоков (~16 минут)
-- **Slashing rate**: 5% per jail
-
----
-
-## 🎬 Быстрый старт (все в одном)
-
-```bash
-# Terminal 1: Запустить Node A
-cd /home/pc205/128/computechain
-./start_node_a.sh --clean
-
-# Дождаться 5+ блоков
-
-# Terminal 2: Запустить Node B
-./start_node_b.sh
-# Выбрать Y для создания нового валидатора
-
-# Terminal 3: Открыть dashboard
-./open_dashboard.sh
-
-# Далее можно останавливать Node B и смотреть как система реагирует!
 ```
 
 ---
 
-**Готово!** Теперь у вас полностью рабочая тестовая среда для проверки Validator Performance & Slashing System. 🎉
+**Built with ❤️ by the ComputeChain Team**

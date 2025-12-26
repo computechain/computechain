@@ -89,10 +89,10 @@ NETWORKS: Dict[str, NetworkConfig] = {
     "devnet": NetworkConfig(
         network_id="devnet",
         chain_id="cpc-devnet-1",
-        block_time_sec=10,
+        block_time_sec=5,
         min_gas_price=1000,
-        block_gas_limit=10_000_000,
-        max_tx_per_block=100,
+        block_gas_limit=50_000_000,
+        max_tx_per_block=500,
         genesis_premine=1_000_000_000 * 10**18,
         epoch_length_blocks=10,
         min_validator_stake=1000,

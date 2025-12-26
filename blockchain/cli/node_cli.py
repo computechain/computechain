@@ -206,7 +206,8 @@ async def run_node_async(args):
 
     async def on_p2p_tx(tx):
         try:
-            mempool.add_transaction(tx)
+            # TODO: Phase 1.4.1 - Fix nonce-aware logic before re-enabling
+            mempool.add_transaction(tx)  # , state=chain.state)
         except Exception as e:
             logger.warning(f"Rejected P2P tx: {e}")
     

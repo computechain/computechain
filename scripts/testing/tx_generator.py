@@ -36,7 +36,7 @@ from computechain.protocol.crypto.keys import sign, public_key_from_private
 from computechain.protocol.crypto.hash import sha256
 from computechain.protocol.config.params import DECIMALS
 from computechain.scripts.testing.nonce_manager import NonceManager
-from computechain.scripts.testing.sse_client import SSEClient
+# Phase 1.4.1: SSE dependency REMOVED - simplified testing approach
 
 # Logging setup
 logging.basicConfig(
@@ -70,19 +70,15 @@ class TxGenerator:
             'start_time': datetime.now()
         }
 
-        # Nonce Manager with event-based transaction tracking (Phase 1.4)
-        # Aggressive cleanup has been REMOVED for safety
+        # Nonce Manager (Phase 1.4.1: Simplified - no SSE dependency)
+        # Uses gap-filling algorithm with periodic blockchain sync
         self.nonce_manager = NonceManager(self._get_nonce)
-
-        # SSE client for real-time event subscription (Phase 1.4 fixed)
-        self.sse_client = SSEClient(node_url)
 
         # Set running flag BEFORE starting threads
         self.running = True
 
-        # Subscribe to events via HTTP SSE (Phase 1.4 - cross-process EventBus)
-        self._subscribe_to_events()
-        logger.info("Event-based transaction tracking ENABLED (Phase 1.4)")
+        # Phase 1.4.1: SSE removed - use simple periodic sync instead
+        logger.info("Simple nonce management ENABLED (no SSE dependency)")
 
         # Generate test accounts
         self.test_accounts = self._generate_test_accounts(100)
@@ -248,152 +244,15 @@ class TxGenerator:
             logger.warning(f"Failed to get nonce for {address}: {e}")
             return 0
 
-    def _subscribe_to_events(self):
-        """
-        Subscribe to blockchain events for transaction lifecycle tracking (Phase 1.4).
-
-        Uses HTTP Server-Sent Events (SSE) for real-time event notifications.
-        This works across process boundaries (unlike in-process EventBus).
-        """
-        # Subscribe to tx_confirmed events
-        def on_tx_confirmed(**data):
-            """Handle tx_confirmed event from SSE."""
-            tx_hash = data.get('tx_hash')
-            block_height = data.get('block_height')
-
-            if not tx_hash:
-                return
-
-            # Find the pending TX to get address and nonce
-            with self.nonce_manager.lock:
-                for addr, pending_txs in self.nonce_manager.pending_txs.items():
-                    for ptx in pending_txs:
-                        if ptx.tx_hash == tx_hash and not ptx.confirmed:
-                            # Notify NonceManager
-                            self.nonce_manager.on_tx_confirmed(
-                                addr,
-                                tx_hash,
-                                ptx.nonce
-                            )
-                            logger.info(f"✅ TX confirmed via SSE: {tx_hash[:16]}... (block {block_height})")
-                            return
-
-        # Subscribe to tx_failed events
-        def on_tx_failed(**data):
-            """Handle tx_failed event from SSE."""
-            tx_hash = data.get('tx_hash')
-            error = data.get('error', 'unknown')
-
-            if not tx_hash:
-                return
-
-            # Find the pending TX to get address and nonce
-            with self.nonce_manager.lock:
-                for addr, pending_txs in self.nonce_manager.pending_txs.items():
-                    for ptx in pending_txs:
-                        if ptx.tx_hash == tx_hash and not ptx.failed:
-                            # Notify NonceManager
-                            self.nonce_manager.on_tx_failed(
-                                addr,
-                                tx_hash,
-                                ptx.nonce,
-                                error
-                            )
-                            logger.warning(f"❌ TX failed via SSE: {tx_hash[:16]}... (error: {error})")
-                            return
-
-        # Register event handlers
-        self.sse_client.subscribe("tx_confirmed", on_tx_confirmed)
-        self.sse_client.subscribe("tx_failed", on_tx_failed)
-
-        # Start SSE client
-        self.sse_client.start()
-        logger.info("✅ Event-based transaction tracking via HTTP SSE ENABLED (Phase 1.4)")
-
-    def _poll_transaction_receipts(self):
-        """
-        Background thread that polls Transaction Receipt API to check TX confirmations.
-
-        Checks pending transactions every 2 seconds using GET /tx/{hash}/receipt API.
-        When a TX is confirmed, notifies NonceManager via on_tx_confirmed().
-        """
-        import time
-
-        logger.info("TX receipt poller started")
-        poll_count = 0
-
-        while self.running:
-            try:
-                poll_count += 1
-
-                # Get copy of currently pending TX hashes from NonceManager
-                with self.nonce_manager.lock:
-                    pending_hashes = list(self.nonce_manager.pending_hashes)
-
-                if poll_count % 10 == 0:  # Log every 20 seconds
-                    logger.info(f"Receipt poller: checking {len(pending_hashes)} pending TXs (poll #{poll_count})")
-
-                # Check each pending TX (batch of up to 20 at a time to avoid overwhelming API)
-                batch_size = 20
-                checked = 0
-                confirmed_count = 0
-
-                for tx_hash in pending_hashes[:batch_size]:
-                    try:
-                        # Query receipt API
-                        resp = requests.get(
-                            f"{self.node_url}/tx/{tx_hash}/receipt",
-                            timeout=2
-                        )
-
-                        checked += 1
-
-                        if resp.status_code == 200:
-                            receipt = resp.json()
-
-                            # If TX is confirmed, notify NonceManager
-                            if receipt.get('status') == 'confirmed':
-                                # Find the pending TX to get address and nonce
-                                with self.nonce_manager.lock:
-                                    for addr, pending_txs in self.nonce_manager.pending_txs.items():
-                                        for ptx in pending_txs:
-                                            if ptx.tx_hash == tx_hash and not ptx.confirmed:
-                                                # Notify confirmation
-                                                self.nonce_manager.on_tx_confirmed(
-                                                    addr,
-                                                    tx_hash,
-                                                    ptx.nonce
-                                                )
-                                                confirmed_count += 1
-                                                logger.info(f"✅ TX confirmed via API polling: {tx_hash[:16]}... (block {receipt.get('block_height')})")
-                                                break
-
-                        elif resp.status_code == 404:
-                            # TX not found - might be too old or failed
-                            if poll_count % 30 == 0:  # Log occasionally
-                                logger.debug(f"TX not found in receipt store: {tx_hash[:16]}...")
-
-                    except Exception as e:
-                        # Individual TX check failure - continue with others
-                        if poll_count % 30 == 0:
-                            logger.debug(f"Error checking TX {tx_hash[:16]}...: {e}")
-
-                if confirmed_count > 0:
-                    logger.info(f"Receipt poller: confirmed {confirmed_count} TXs out of {checked} checked")
-
-                # Sleep between poll cycles
-                time.sleep(2)
-
-            except Exception as e:
-                logger.error(f"Error in receipt poller: {e}")
-                time.sleep(5)
-
     def _transaction_tracker(self):
         """
-        Background thread for tracking pending transactions.
-        Checks for timeouts and syncs with blockchain periodically.
+        Background thread for tracking pending transactions (Phase 1.4.1: Simplified).
+
+        - Checks for TX timeouts (marks stale TX as failed)
+        - Periodic resync with blockchain to update nonces
+        - No SSE dependency - relies on gap-filling algorithm
         """
-        logger.info("Transaction tracker started")
+        logger.info("Transaction tracker started (simplified mode)")
 
         while self.running:
             try:
@@ -621,7 +480,7 @@ class TxGenerator:
         logger.info(f"Average TPS: {avg_tps:.2f}")
         logger.info(f"By type: {self.stats['by_type']}")
         logger.info("")
-        logger.info("NonceManager Statistics (Event-based tracking only):")
+        logger.info("NonceManager Statistics (Simplified tracking - no SSE):")
         logger.info(f"  Current pending: {nonce_stats['current_pending']}")
         logger.info(f"  Total confirmed: {nonce_stats['total_confirmed']}")
         logger.info(f"  Total failed: {nonce_stats['total_failed']}")
@@ -653,7 +512,7 @@ def main():
 
     args = parser.parse_args()
 
-    # Phase 1.4: Event-based tracking is now the ONLY mode (aggressive cleanup removed)
+    # Phase 1.4.1: Simplified tracking (no SSE dependency)
     generator = TxGenerator(args.node, args.mode)
 
     # Apply custom settings if provided

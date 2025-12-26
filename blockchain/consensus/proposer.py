@@ -134,7 +134,7 @@ class BlockProposer:
                 break
 
             try:
-                tmp_state.apply_transaction(tx)
+                tmp_state.apply_transaction(tx, skip_crypto_check=True)
                 valid_txs.append(tx)
                 cumulative_gas += tx_gas
             except Exception as e:

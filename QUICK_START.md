@@ -1,223 +1,323 @@
-# ⚡ Quick Start - Validator Performance System
+# ⚡ Quick Start Guide
 
-## 🚀 Запуск за 3 минуты
+## 🚀 Start a Single Node (3 minutes)
 
-### Шаг 1: Запустите Node A (Terminal 1)
+### Step 1: Initialize and Start Node
 
 ```bash
 cd ~/128/computechain
-./start_node_a.sh --clean
+
+# Initialize node
+./run_node.py --datadir .node_a init
+
+# Start node
+./run_node.py --datadir .node_a start
 ```
 
-**Ожидаемый вывод:**
+**Expected output:**
 ```
-==========================================
-🚀 Starting Node A (Primary Validator)
-==========================================
-
-✅ Node A initialized
-   Data dir: .node_a
-   RPC: http://localhost:8000
-   P2P: 9000
-   Dashboard: http://localhost:8000/
-
-🔑 Validator Key:
-   Address: cpcvalcons1...
-
-🚀 Starting Node A...
+✅ Node initialized at .node_a
+🚀 Starting RPC server on http://localhost:8000
+📊 Prometheus metrics: http://localhost:8000/metrics
+📡 SSE events: http://localhost:8000/events/stream
 ```
 
-**Дождитесь:** Несколько строк с "Block X added"
+**Wait for:** Several lines showing "Block X added to chain"
 
 ---
 
-### Шаг 2: Откройте Dashboard (Terminal 2 или браузер)
+### Step 2: Open Dashboard
 
-Вариант A - Автоматически:
+Option A - Automated:
 ```bash
-cd ~/128/computechain
 ./open_dashboard.sh
 ```
 
-Вариант B - Вручную:
+Option B - Manual:
 ```
-Откройте: http://localhost:8000/
+Open in browser: http://localhost:8000/
 ```
 
-**Что увидите:**
-- Current Height: растёт
+**What you'll see:**
+- Current Height: increasing
 - Active Validators: 1
-- Leaderboard с одним валидатором
 - Performance Score: 100%
+- Real-time updates every 10 seconds
 
 ---
 
-### Шаг 3: Запустите Node B (Terminal 3)
+### Step 3: Create a Wallet and Stake
 
 ```bash
-cd ~/128/computechain
-./start_node_b.sh
-```
+# Create validator key
+python3 -m cli.main keys add myvalidator
 
-**Важно!** Скрипт спросит:
-```
-📝 Create NEW validator for Node B? (y/n):
-```
+# Get some tokens (genesis account has balance)
+# Or request from faucet in multi-node setup
 
-Выберите:
-- **Y** - создать нового валидатора с автоматическим стейкингом (рекомендуется для теста)
-- **N** - просто запустить ноду без валидатора
+# Stake to become validator
+python3 -m cli.main tx stake 1000 --from myvalidator
 
-**Если выбрали Y**, скрипт автоматически:
-1. ✅ Создаст alice key
-2. ✅ Отправит 3000 CPC с faucet
-3. ✅ Застейкает 2000 CPC
-4. ✅ Запустит Node B
-
-**Дождитесь:** Epoch transition (10 блоков) - alice появится в active set
-
----
-
-## 🧪 Тестирование Jail Mechanism
-
-### 1. Посмотрите текущее состояние в Dashboard
-
-Должно быть 2 активных валидатора с performance score ~100%
-
-### 2. Остановите Node B
-
-В Terminal 3 нажмите **Ctrl+C**
-
-### 3. Смотрите Dashboard
-
-Обновляется каждые 10 секунд. Увидите:
-- Missed blocks у Node B растут: 1, 2, 3...
-- Performance score падает
-- После 10 missed blocks → JAIL! 🔒
-
-### 4. Проверьте Jailed Validators
-
-На dashboard появится секция:
-```
-⚠️ Jailed Validators
-- Node B validator
-- Blocks remaining: 100
-- Jail count: 1
-- Penalty: 5% stake
+# Update validator metadata
+python3 -m cli.main tx update-validator \
+  --name "MyAwesomePool" \
+  --website "https://mypool.com" \
+  --description "High-performance validator" \
+  --commission 0.12 \
+  --from myvalidator
 ```
 
 ---
 
-## 📊 API Примеры
+## 🧪 Multi-Validator Load Testing
+
+For testing with multiple validators and transaction load:
 
 ```bash
-# Статус
-curl -s http://localhost:8000/status | python3 -m json.tool
+# Low load test (1-5 TPS) - stable for long duration
+./start_test.sh low 24  # 24 hours
 
-# Leaderboard
-curl -s http://localhost:8000/validators/leaderboard | python3 -m json.tool
+# Medium load test (10-50 TPS) - testing performance limits
+./start_test.sh medium 24
 
-# Jailed
-curl -s http://localhost:8000/validators/jailed | python3 -m json.tool
+# High load test (100-500 TPS) - NOT RECOMMENDED
+# Current architecture supports ~10 TPS sustained
 ```
+
+**What this does:**
+1. Initializes 5 validators (ports 8000-8004)
+2. Starts all validators
+3. Launches tx_generator with specified load mode
+4. Generates transactions for the specified duration
+
+**Monitor progress:**
+```bash
+# Check validator logs
+tail -f logs/validator_1.log
+
+# Check tx_generator logs
+tail -f logs/tx_generator_low_*.log
+
+# View Prometheus metrics
+curl http://localhost:8000/metrics | grep computechain_tps
+curl http://localhost:8000/metrics | grep computechain_block_height
+```
+
+See `TEST_GUIDE.md` for detailed load testing instructions.
+
+---
+
+## 📊 CLI Commands
+
+### Query Commands
+
+```bash
+# Check blockchain status
+curl http://localhost:8000/chain/info
+
+# Get validators
+curl http://localhost:8000/validators/leaderboard
+
+# Check balance
+python3 -m cli.main query balance cpc1...
+
+# Check account info
+python3 -m cli.main query account cpc1...
+```
+
+### Transaction Commands
+
+```bash
+# Transfer tokens
+python3 -m cli.main tx transfer cpc1recipient... 100 --from mykey
+
+# Stake (become validator)
+python3 -m cli.main tx stake 1000 --from mykey
+
+# Unstake (withdraw stake)
+python3 -m cli.main tx unstake 500 --from mykey
+
+# Update validator metadata
+python3 -m cli.main tx update-validator \
+  --name "MyPool" \
+  --commission 0.15 \
+  --from mykey
+
+# Delegate to validator
+python3 -m cli.main tx delegate cpcvalcons1... 500 --from delegator
+
+# Undelegate from validator
+python3 -m cli.main tx undelegate cpcvalcons1... 200 --from delegator
+
+# Unjail (1000 CPC fee)
+python3 -m cli.main tx unjail --from mykey
+```
+
+---
+
+## 📡 Real-time Events (SSE)
+
+ComputeChain provides Server-Sent Events for real-time blockchain updates:
+
+```bash
+# Connect to event stream
+curl -N http://localhost:8000/events/stream
+
+# You'll see:
+# : ping (keep-alive every 15 seconds)
+# data: {"type":"tx_confirmed","tx_hash":"...","block_height":123}
+# data: {"type":"block_created","block_height":124,"block_hash":"..."}
+```
+
+**Event types:**
+- `tx_confirmed` - Transaction included in block
+- `tx_failed` - Transaction failed or expired
+- `block_created` - New block created
+
+---
+
+## 🧪 Testing Validator Features
+
+### Test Jailing Mechanism
+
+1. **Start multi-validator setup:**
+   ```bash
+   ./start_test.sh low 1  # 1 hour test
+   ```
+
+2. **Stop one validator:**
+   ```bash
+   # Find validator process
+   ps aux | grep "run_node.py.*validator_2"
+
+   # Kill it
+   pkill -f "run_node.py.*validator_2"
+   ```
+
+3. **Watch the dashboard:**
+   - Missed blocks will increase
+   - After 10 consecutive misses → JAIL! 🔒
+   - Validator removed from active set
+   - 5% stake penalty applied
+
+4. **Check jailed validators:**
+   ```bash
+   curl http://localhost:8000/validators/jailed | python3 -m json.tool
+   ```
+
+### Test Delegation
+
+1. **Create delegator account:**
+   ```bash
+   python3 -m cli.main keys add delegator
+   # Fund account with tokens
+   ```
+
+2. **Delegate to validator:**
+   ```bash
+   python3 -m cli.main tx delegate cpcvalcons1... 500 --from delegator
+   ```
+
+3. **Verify delegation:**
+   ```bash
+   curl http://localhost:8000/validators/leaderboard
+   # Check validator's "total_delegated" and "power" increased
+   ```
+
+4. **Undelegate:**
+   ```bash
+   python3 -m cli.main tx undelegate cpcvalcons1... 200 --from delegator
+   # Note: 21-day unbonding period applies
+   ```
+
+---
+
+## 📊 Performance Metrics
+
+**Current Architecture (Phase 1):**
+- **Sustained TPS**: ~10 TPS
+- **Block Time**: 10 seconds
+- **Max TX/Block**: 100
+- **Consensus**: Tendermint BFT (instant finality)
+
+**Future Targets:**
+- Phase 1.4.1: 100 TPS (5s blocks, parallel validation)
+- Phase 1.4.2: 300 TPS (3s blocks, state caching)
+- Phase 1.4.3: 1000+ TPS (Layer 2, sharding)
+
+See `ROADMAP.md` for detailed scalability roadmap.
 
 ---
 
 ## 🔧 Troubleshooting
 
-### Node A не запускается?
+### Node won't start?
 ```bash
-# Убить старые процессы
+# Kill old processes
 pkill -f run_node.py
 
-# Очистить данные
-rm -rf .node_a .node_b .test_node
+# Clean data directories
+rm -rf .node_a .test_node
 
-# Запустить заново
-./start_node_a.sh --clean
+# Restart
+./run_node.py --datadir .node_a init
+./run_node.py --datadir .node_a start
 ```
 
-### Node B ошибка "validator key empty"?
+### Dashboard not loading?
 ```bash
-# Очистить Node B
-rm -rf .node_b
-
-# Запустить заново (выбрать Y)
-./start_node_b.sh
-```
-
-### Dashboard не открывается?
-```bash
-# Проверить что нода работает
+# Check node is running
 curl http://localhost:8000/status
 
-# Если работает - открыть вручную
+# If working, open manually
 firefox http://localhost:8000/
 ```
 
----
-
-## 🔧 Новые возможности CLI (Phase 1-3)
-
-### Обновить метаданные валидатора
+### Port already in use?
 ```bash
-python3 -m cli.main tx update-validator \
-  --name "MyPool" \
-  --website "https://mypool.com" \
-  --description "Best validator in ComputeChain" \
-  --commission 0.12 \
-  --from alice
+# Check what's using port 8000
+ss -tlnp | grep 8000
+
+# Kill the process or use different port
+./run_node.py --datadir .node_a start --port 8001
 ```
 
-### Делегировать токены
+### Transactions not confirming?
 ```bash
-# Делегировать 500 CPC валидатору
-python3 -m cli.main tx delegate cpcvalcons1abc... 500 --from bob
+# Check mempool size
+curl http://localhost:8000/metrics | grep mempool_size
 
-# Отозвать 200 CPC
-python3 -m cli.main tx undelegate cpcvalcons1abc... 200 --from bob
-```
+# Check event stream working
+curl -N http://localhost:8000/events/stream
 
-### Досрочно выйти из jail (1000 CPC fee)
-```bash
-python3 -m cli.main tx unjail --from alice
+# Check validator logs for errors
+tail -f logs/validator_1.log | grep -i error
 ```
 
 ---
 
-## 📚 Дальше
+## 📚 Next Steps
 
-- **Детальное тестирование**: `TEST_GUIDE.md`
-- **Описание системы**: `VALIDATOR_PERFORMANCE_GUIDE.md`
-- **Changelog**: `CHANGELOG_SINCE_RESTRUCTURE.md` - Все изменения с момента реструктуризации
-
----
-
-## 🎯 Чеклист успешного запуска
-
-- [ ] Node A запущена и создаёт блоки
-- [ ] Dashboard открывается на http://localhost:8000/
-- [ ] Видно 1 активный валидатор
-- [ ] Node B запущена (опционально)
-- [ ] Видно 2 активных валидатора после epoch transition
-- [ ] Missed blocks детектируются при остановке ноды
-- [ ] Jail срабатывает после 10 missed blocks
-
-**Всё работает?** Поздравляю! Система полностью функциональна! 🎉
+- **Load Testing**: See `TEST_GUIDE.md` for comprehensive testing guide
+- **Validator Guide**: See `VALIDATOR_PERFORMANCE_GUIDE.md` for validator optimization
+- **Gas Model**: See `GAS_MODEL.md` for transaction costs
+- **Development Roadmap**: See `ROADMAP.md` for future features
 
 ---
 
-## ⚡ One-liner для теста
+## 🎯 Success Checklist
 
-```bash
-# В одном терминале (для демо)
-cd ~/128/computechain && \
-./start_node_a.sh --clean & \
-sleep 15 && \
-./open_dashboard.sh
-```
+- [ ] Node starts without errors
+- [ ] Dashboard accessible at http://localhost:8000/
+- [ ] Blocks being created (height increasing)
+- [ ] Can create wallet and check balance
+- [ ] Can send transactions
+- [ ] SSE event stream working
+- [ ] Prometheus metrics accessible
 
-Затем в другом терминале:
-```bash
-cd ~/128/computechain && echo "y" | ./start_node_b.sh
-```
+**Everything working?** Congratulations! Your ComputeChain node is fully operational! 🎉
+
+---
+
+**Last Updated:** December 25, 2025
+**Current Version:** Phase 1.4 (SSE Events, TX TTL, Performance Analysis)

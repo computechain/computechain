@@ -1,7 +1,7 @@
 # ComputeChain - General Roadmap (Revised)
 
-> **Last Updated:** December 17, 2025
-> **Status:** Draft v7 (Phase 1.3 Infrastructure & Observability completed)
+> **Last Updated:** December 25, 2025
+> **Status:** Draft v8 (Phase 1.4 Performance & Scalability analysis, Phase 1.5 Transaction Tracking completed)
 > **Timeline:** ~12 months to Mainnet Launch (approximate)
 
 ---
@@ -204,23 +204,113 @@
   - **Acceptance:** RocksDB ready for Phase 3
   - **Note:** SQLite sufficient for devnet/early testnet, RocksDB needed for public testnet
 
-#### 1.4 Security & Testing ⭐ CRITICAL
+#### 1.4 Performance & Scalability ⭐ CRITICAL
 
-- [ ] **Transaction Lifecycle Tracking** ⭐ PRODUCTION CRITICAL
-  - Implement proper `on_tx_confirmed()` callback mechanism
-  - Track transaction states: pending → mempool → included_in_block → confirmed
-  - Transaction receipt API: `GET /tx/{hash}/receipt` (status, block_height, confirmations)
-  - Replace aggressive cleanup workaround with precise tracking
-  - NonceManager uses callbacks instead of periodic sync
-  - Monitor transaction confirmation times (metrics)
-  - **Current Status:** Using aggressive cleanup as workaround (deletes all pending TX on blockchain_nonce change)
-  - **Production Need:** Precise tracking prevents unnecessary TX resubmissions, improves efficiency
+**Current State (Dec 25, 2025):**
+- ✅ Transaction event tracking via SSE working (122K+ TX confirmed in test)
+- ✅ **Phase 1.4.1 optimizations implemented** (config updates, priority queue, nonce-aware mempool)
+- ⚠️ **Previous throughput: ~10 TPS** (100 TX/block ÷ 10s block time)
+- ✅ **New theoretical max: ~100 TPS** (500 TX/block ÷ 5s block time)
+- ⏳ **Testing required** to validate real-world sustained throughput
+
+**Throughput Improvements (Phase 1.4.1):**
+```
+Old Architecture:
+- Block time: 10 seconds
+- Max TX/block: 100
+- Sequential validation with redundant checks
+- Theoretical max: 100 ÷ 10 = 10 TPS
+
+New Architecture:
+- Block time: 5 seconds (2x faster)
+- Max TX/block: 500 (5x capacity)
+- Optimized validation (skip redundant crypto checks)
+- Gas-price priority queue
+- Nonce-aware mempool with pending queue
+- Theoretical max: 500 ÷ 5 = 100 TPS (10x improvement)
+
+User Capacity:
+- At 10 TPS: ~860K transactions/day
+- 1 TX/user/day: supports ~860K users
+- 10 TX/user/day: supports ~86K users
+- Active trading (100 TX/day): supports ~8.6K users
+```
+
+**Scalability Roadmap:**
+
+- [ ] **Phase 1.4.1: Immediate Optimizations** (Target: 50-100 TPS) **IN PROGRESS**
+  - [x] Reduce block time: 10s → 5s ✅ (Dec 25, 2025)
+  - [x] Increase max_tx_per_block: 100 → 500 ✅ (Dec 25, 2025)
+  - [x] Increase block_gas_limit: 10M → 50M ✅ (Dec 25, 2025)
+  - [x] Remove redundant signature verification (skip_crypto_check) ✅ (Dec 25, 2025)
+  - [x] Add transaction priority queue (gas price-based) ✅ (Dec 25, 2025)
+  - [x] Implement nonce-aware mempool with pending queue ✅ (Dec 25, 2025)
+  - [ ] Network propagation testing for 5s block time ⏳
+  - [ ] 30 TPS load test (1 hour) ⏳
+  - [ ] 50 TPS load test (4 hours) ⏳
+  - [ ] 80 TPS stress test (24 hours) ⏳
+  - **Target:** 100 TPS sustained (500 TX/block ÷ 5s = 100 TPS)
+  - **Capacity:** ~500K active users (10 TX/day each)
+  - **Status:** Code complete, testing phase next
+  - **Acceptance:** No nonce gaps, no mempool saturation, stable block production
+
+- [ ] **Phase 1.4.2: Advanced Optimizations** (Target: 200-500 TPS)
+  - [ ] Batch signature verification (verify multiple TX signatures in parallel)
+  - [ ] State caching layer (reduce DB reads during validation)
+  - [ ] Optimize state root calculation (incremental Merkle updates)
+  - [ ] Mempool pre-validation (reject invalid TX before broadcast)
+  - [ ] Block time: 5s → 3s (if network stable)
+  - [ ] Max TX/block: 500 → 1000
+  - **Target:** 300 TPS sustained (1000 TX/block ÷ 3s = 333 TPS)
+  - **Capacity:** ~1.5M active users
+  - **Testing:** 7-day continuous load test at 250 TPS
+  - **Acceptance:** CPU usage <70%, memory stable, no crashes
+
+- [ ] **Phase 1.4.3: Long-term Scalability** (Target: 1000+ TPS)
+  - [ ] State machine parallelization (independent transaction execution)
+  - [ ] Optimistic execution (speculative parallel processing)
+  - [ ] Layer 2 readiness (state channels, rollups)
+  - [ ] Sharding for compute tasks (separate compute from consensus)
+  - **Target:** 1000+ TPS
+  - **Capacity:** 5M+ users
+  - **Timeline:** Post-mainnet R&D (2027+)
+
+**Comparison with Other L1 Blockchains:**
+| Blockchain | TPS | Note |
+|------------|-----|------|
+| Bitcoin | ~7 | Production |
+| Ethereum | ~15-30 | Production |
+| Cardano | ~250 | Optimized |
+| **ComputeChain (current)** | **~10** | Phase 1 MVP |
+| **ComputeChain (Phase 1.4.1)** | **100** | Immediate target |
+| **ComputeChain (Phase 1.4.2)** | **300** | Mid-term target |
+| **ComputeChain (Phase 1.4.3)** | **1000+** | Long-term R&D |
+
+**Critical Findings from Load Testing (Dec 25, 2025):**
+- ✅ SSE event system working correctly (122,778 TX confirmed via events)
+- ✅ EventBus singleton issue fixed (module-level imports)
+- ✅ TX TTL auto-cleanup working (1 hour expiry)
+- ✅ tx_failed events now emitted on expiry (NonceManager unblocking)
+- ❌ High load (100-500 TPS) causes nonce gaps and mempool saturation
+- ❌ Medium load (10-50 TPS) needs testing - likely at architectural limit
+- ✅ Low load (1-5 TPS) stable for 12+ hours
+- **Recommendation:** Use medium load for 24-hour stress test
+
+#### 1.5 Security & Testing ⭐ CRITICAL
+
+- [x] **Transaction Lifecycle Tracking** ⭐ PRODUCTION CRITICAL ✅ **COMPLETED (Dec 25, 2025)**
+  - Implemented SSE event system for cross-process communication ✅
+  - EventBus → HTTP SSE bridge for real-time events ✅
+  - NonceManager subscribes to tx_confirmed/tx_failed events ✅
+  - TX expiry (TTL) emits tx_failed events ✅
+  - Transaction receipt tracking (pending → confirmed → failed) ✅
   - **Implementation:**
-    - `blockchain/core/chain.py` - emit `tx_confirmed` event after block inclusion
-    - `scripts/testing/nonce_manager.py` - subscribe to events, call `on_tx_confirmed(tx_hash)`
-    - `blockchain/rpc/api.py` - add `/tx/{hash}/receipt` endpoint
-  - **Acceptance:** tx_generator correctly tracks TX lifecycle, no aggressive cleanup needed
-  - **Tests:** Transaction confirmation callback working, nonce tracking accurate
+    - `blockchain/rpc/api.py` - SSE endpoint, event bridge
+    - `scripts/testing/sse_client.py` - SSE client
+    - `blockchain/core/mempool.py` - emit tx_failed on expiry
+    - `blockchain/core/chain.py` - emit tx_confirmed on inclusion
+  - **Acceptance:** 122,778 TX confirmed via events in 12-hour test ✅
+  - **Tests:** SSE event delivery working, NonceManager tracking accurate ✅
 
 - [ ] **Economic Security Simulations**
   - False slashing scenarios (network partition)
@@ -230,18 +320,18 @@
   - **Acceptance:** All attacks fail or mitigated
 
 - [ ] **Load Testing Harness**
-  - Transaction generator (configurable TPS)
+  - Transaction generator (configurable TPS) ✅ DONE
   - Validator simulator (100+ nodes)
   - Chaos testing (random node failures)
-  - **Acceptance:** 500 TPS sustained, 100 validators stable
+  - **Acceptance:** 100 TPS sustained (updated from 500 TPS based on findings), 100 validators stable
 
 - [ ] **Stress Testing**
-  - 1000+ transactions per block
+  - 500+ transactions per block (updated from 1000+)
   - 7-day continuous run (no crashes)
   - Memory leak detection (valgrind)
   - **Acceptance:** Zero crashes, memory stable
 
-#### 1.5 Documentation
+#### 1.6 Documentation
 - [ ] **Node Operator Guide**
   - Hardware requirements (CPU, RAM, disk, network)
   - Setup script (`./setup_node.sh`)

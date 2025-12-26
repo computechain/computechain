@@ -271,7 +271,8 @@ async def send_tx(tx: Transaction):
 
     try:
         # Basic validation via Mempool
-        added, reason = mempool.add_transaction(tx)
+        # TODO: Phase 1.4.1 - Fix nonce-aware logic before re-enabling state parameter
+        added, reason = mempool.add_transaction(tx)  # , state=chain.state)
         if not added:
              return {"tx_hash": tx.hash_hex, "status": "rejected", "error": reason}
 
@@ -405,7 +406,9 @@ async def event_stream(request: Request):
     - tx_failed: Transaction failed validation
     - block_created: New block added to chain
     """
-    client_queue = Queue(maxsize=100)
+    # Phase 1.4.1: Increased from 100 to 10000 to handle high-throughput scenarios
+    # At 100 TPS with 5s blocks = 500 TX/block, need larger queue for burst handling
+    client_queue = Queue(maxsize=10000)
     event_queues.append(client_queue)
 
     async def event_generator():
@@ -461,15 +464,22 @@ def broadcast_event(event_type: str, **data):
     for q in event_queues:
         try:
             q.put_nowait(event_data)
-            logger.info(f"Event queued successfully: {event_type}")
+            logger.debug(f"Event queued successfully: {event_type}")
         except Exception as e:
-            logger.warning(f"Failed to queue event: {e}")
-            dead_queues.append(q)
+            # Phase 1.4.1: Don't kill queue on overflow, just log warning
+            from queue import Full
+            if isinstance(e, Full):
+                logger.warning(f"SSE queue full (client not consuming fast enough), dropping event: {event_type}")
+                # Don't add to dead_queues - client is still connected, just slow
+            else:
+                logger.error(f"Failed to queue event (marking queue as dead): {e}")
+                dead_queues.append(q)
 
-    # Clean up dead queues
+    # Clean up dead queues (connection errors, not overflow)
     for q in dead_queues:
         if q in event_queues:
             event_queues.remove(q)
+            logger.warning(f"Removed dead SSE queue. Active clients: {len(event_queues)}")
 
 
 def setup_event_bridge(blockchain_instance: Blockchain):

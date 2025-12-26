@@ -11,16 +11,18 @@ The network features a production-ready validator system with performance tracki
 ## ✨ Key Features
 
 ### 🔐 **Consensus & Security**
-* **Multi-Validator PoA (Round-Robin)** with deterministic block production
+* **Tendermint BFT Consensus** with instant finality (10s block time)
 * **Post-Quantum Signature Architecture** (Dilithium/Falcon-ready)
 * **Validator Performance Tracking** with automated jailing and slashing
+* **Real-time Event System** (SSE) for transaction tracking and monitoring
 
 ### 💸 **Economics & Staking**
 * **Ethereum-like Gas Model** for anti-spam protection
 * **Comprehensive Staking System**: STAKE, UNSTAKE with penalties
-* **Delegation Support**: Delegate tokens to validators
-* **Commission-based Rewards**: Validators earn commission from delegations (default 10%)
+* **Delegation Support**: Delegate tokens to validators with 21-day unbonding period
+* **Commission-based Rewards**: Validators earn commission from delegations (max 20%)
 * **Graduated Slashing**: Progressive penalties (5% → 10% → 100% ejection)
+* **Economic Invariants**: Supply conservation, burn/mint tracking, treasury management
 
 ### 👥 **Validator System**
 * **Metadata Support**: Validators can set name, website, description
@@ -32,15 +34,25 @@ The network features a production-ready validator system with performance tracki
 ### 🧠 **Proof-of-Compute (PoC)**
 * **ComputeTask / ComputeResult** native types
 * **Merkle verification** of compute results in block headers
+* **ZK-based verification** for off-chain weight calculation
+
+### 🛠 **Infrastructure & Observability**
+* **State Snapshots**: Fast sync from snapshots (<5 min sync time)
+* **Prometheus Metrics**: Block metrics, validator stats, economic tracking
+* **Upgrade Protocol**: Versioning, state migration framework
+* **Transaction TTL**: Auto-cleanup of expired transactions (1 hour)
+* **Performance**: ~10 TPS sustained (Phase 1), roadmap to 100+ TPS
 
 ---
 
 ## 📖 Documentation
 
+* **[ROADMAP.md](./ROADMAP.md)** - Development roadmap with performance & scalability targets
 * **[QUICK_START.md](./QUICK_START.md)** - Quick start guide for running nodes
 * **[VALIDATOR_PERFORMANCE_GUIDE.md](./VALIDATOR_PERFORMANCE_GUIDE.md)** - Comprehensive validator guide
 * **[TEST_GUIDE.md](./TEST_GUIDE.md)** - Testing and E2E scenarios
-* **[CHANGELOG_SINCE_RESTRUCTURE.md](./CHANGELOG_SINCE_RESTRUCTURE.md)** - Detailed changelog of recent improvements
+* **[GAS_MODEL.md](./GAS_MODEL.md)** - Gas costs and economic parameters
+* **[FINALITY_GUARANTEES.md](./FINALITY_GUARANTEES.md)** - Tendermint instant finality
 
 Full documentation is available at **[ComputeChain Documentation](https://docs.computechain.space)**.
 
@@ -59,8 +71,8 @@ Full documentation is available at **[ComputeChain Documentation](https://docs.c
 │   └── main.py     # Commands: keys, query, tx (stake, delegate, etc.)
 ├── miner/           # GPU worker stack
 ├── validator/       # PoC validator/orchestrator
-├── scripts/         # Devnet launchers & E2E tests
-└── tests/           # Unit tests (11 tests, all passing ✅)
+├── scripts/         # Devnet launchers, testing tools (tx_generator, SSE client)
+└── tests/           # Unit tests (25+ tests, all passing ✅)
 ```
 
 ---
@@ -117,7 +129,7 @@ python3 -m cli.main tx unjail --from mykey
 ### Run Unit Tests
 
 ```bash
-# All tests (24 passing ✅)
+# All tests (25+ passing ✅)
 ./run_tests.sh
 
 # Specific test

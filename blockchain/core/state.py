@@ -114,39 +114,41 @@ class AccountState:
         if minted:
             self.total_minted = int(minted)
 
-    def apply_transaction(self, tx: Transaction, current_height: Optional[int] = None) -> bool:
+    def apply_transaction(self, tx: Transaction, current_height: Optional[int] = None, skip_crypto_check: bool = False) -> bool:
         """
         Applies transaction to state (in-memory). Raises error on failure.
 
         Args:
             tx: Transaction to apply
             current_height: Current block height (used for delegation tracking, etc.)
+            skip_crypto_check: If True, skip signature verification (assumes already validated by mempool)
         """
-        
+
         # 0. Crypto Verification
-        if not tx.signature or not tx.pub_key:
-             raise ValueError("Missing signature or pub_key")
+        if not skip_crypto_check:
+            if not tx.signature or not tx.pub_key:
+                 raise ValueError("Missing signature or pub_key")
 
-        # Verify pub_key matches from_address
-        # Determine prefix from address (part before '1')
-        try:
-            prefix = tx.from_address.split("1")[0]
-            derived_addr = address_from_pubkey(bytes.fromhex(tx.pub_key), prefix=prefix)
-            if derived_addr != tx.from_address:
-                raise ValueError(f"pub_key mismatch: derived {derived_addr}, expected {tx.from_address}")
-        except Exception as e:
-             raise ValueError(f"Invalid address format or key: {e}")
+            # Verify pub_key matches from_address
+            # Determine prefix from address (part before '1')
+            try:
+                prefix = tx.from_address.split("1")[0]
+                derived_addr = address_from_pubkey(bytes.fromhex(tx.pub_key), prefix=prefix)
+                if derived_addr != tx.from_address:
+                    raise ValueError(f"pub_key mismatch: derived {derived_addr}, expected {tx.from_address}")
+            except Exception as e:
+                 raise ValueError(f"Invalid address format or key: {e}")
 
-        # Verify signature
-        try:
-            msg_hash_bytes = bytes.fromhex(tx.hash())
-            sig_bytes = bytes.fromhex(tx.signature)
-            pub_bytes = bytes.fromhex(tx.pub_key)
-            
-            if not verify(msg_hash_bytes, sig_bytes, pub_bytes):
-                 raise ValueError("Invalid signature")
-        except Exception as e:
-             raise ValueError(f"Signature verification failed: {e}")
+            # Verify signature
+            try:
+                msg_hash_bytes = bytes.fromhex(tx.hash())
+                sig_bytes = bytes.fromhex(tx.signature)
+                pub_bytes = bytes.fromhex(tx.pub_key)
+
+                if not verify(msg_hash_bytes, sig_bytes, pub_bytes):
+                     raise ValueError("Invalid signature")
+            except Exception as e:
+                 raise ValueError(f"Signature verification failed: {e}")
 
         sender = self.get_account(tx.from_address)
         
