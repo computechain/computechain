@@ -271,8 +271,8 @@ async def send_tx(tx: Transaction):
 
     try:
         # Basic validation via Mempool
-        # TODO: Phase 1.4.1 - Fix nonce-aware logic before re-enabling state parameter
-        added, reason = mempool.add_transaction(tx)  # , state=chain.state)
+        # Phase 1.4.1: Re-enabled nonce validation to prevent mempool overflow
+        added, reason = mempool.add_transaction(tx, state=chain.state)
         if not added:
              return {"tx_hash": tx.hash_hex, "status": "rejected", "error": reason}
 

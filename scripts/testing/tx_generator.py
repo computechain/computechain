@@ -119,8 +119,8 @@ class TxGenerator:
                 'delegate_ratio': 0.25,
                 'undelegate_ratio': 0.15,
                 'update_validator_ratio': 0.10,
-                'amount_min': 100 * (10**DECIMALS),
-                'amount_max': 10000 * (10**DECIMALS),
+                'amount_min': 1 * (10**DECIMALS),  # Reduced from 100 to prevent balance exhaustion
+                'amount_max': 100 * (10**DECIMALS),  # Reduced from 10000 to prevent balance exhaustion
             }
         }
         return configs.get(mode, configs['low'])

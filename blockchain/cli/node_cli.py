@@ -193,6 +193,16 @@ async def run_node_async(args):
             
             if chain.add_block(block):
                 mempool.remove_transactions(block.txs)
+
+                # Phase 1.4.1: Promote pending transactions after block inclusion
+                # Promote ALL addresses in pending queue, not just processed TX senders
+                # This fixes the deadlock when mempool is empty but pending_queue has TX
+                if hasattr(mempool, 'pending_queue'):
+                    for address in list(mempool.pending_queue.keys()):
+                        try:
+                            mempool._promote_from_pending(address, chain.state)
+                        except Exception as e:
+                            logger.warning(f"Error promoting pending txs for {address[:10]}...: {e}")
         except ValueError as e:
             # Catch specific validation errors
             logging.warning(f"Rejected P2P block: {e}")
@@ -206,8 +216,8 @@ async def run_node_async(args):
 
     async def on_p2p_tx(tx):
         try:
-            # TODO: Phase 1.4.1 - Fix nonce-aware logic before re-enabling
-            mempool.add_transaction(tx)  # , state=chain.state)
+            # Phase 1.4.1: Re-enabled nonce validation to prevent mempool overflow
+            mempool.add_transaction(tx, state=chain.state)
         except Exception as e:
             logger.warning(f"Rejected P2P tx: {e}")
     

@@ -188,6 +188,16 @@ class BlockProposer:
             # Remove transactions from mempool
             self.mempool.remove_transactions(txs)
 
+            # Phase 1.4.1: Promote pending transactions after block inclusion
+            # Promote ALL addresses in pending queue, not just processed TX senders
+            # This fixes the deadlock when mempool is empty but pending_queue has TX
+            if hasattr(self.mempool, 'pending_queue'):
+                for address in list(self.mempool.pending_queue.keys()):
+                    try:
+                        self.mempool._promote_from_pending(address, self.chain.state)
+                    except Exception as e:
+                        logger.warning(f"Error promoting pending txs for {address[:10]}...: {e}")
+
             # Prune stale transactions (transactions with old nonces)
             try:
                 # Phase 1.4: Cleanup expired TXs before pruning stale

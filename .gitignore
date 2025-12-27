@@ -57,6 +57,9 @@ data/
 # Monitoring (separate nested repo, not pushed)
 monitoring/
 
+# Documentation (separate nested repo, not pushed)
+docs/
+
 # IDE
 .idea/
 .vscode/
