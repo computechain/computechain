@@ -123,9 +123,10 @@ class BlockProposer:
         # Create temp state to validate txs and calc state root
         tmp_state = self.chain.state.clone()
         valid_txs = []
+        invalid_txs = []  # Track invalid TX to remove from mempool
         cumulative_gas = 0
         block_gas_limit = self.chain.config.block_gas_limit
-        
+
         for tx in txs:
             # Check block gas limit
             tx_gas = GAS_PER_TYPE.get(tx.tx_type, 0)
@@ -139,7 +140,13 @@ class BlockProposer:
                 cumulative_gas += tx_gas
             except Exception as e:
                 logger.warning(f"Skipping invalid tx {tx.hash()} in proposer: {e}")
-        
+                invalid_txs.append(tx)  # Mark for removal
+
+        # Remove invalid transactions from mempool immediately
+        if invalid_txs:
+            self.mempool.remove_transactions(invalid_txs)
+            logger.info(f"Removed {len(invalid_txs)} invalid transactions from mempool")
+
         # Use only valid txs
         txs = valid_txs
         

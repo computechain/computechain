@@ -64,9 +64,9 @@ class NonceManager:
         # Блокировка для thread-safety
         self.lock = threading.RLock()
 
-        # Настройки (Phase 1.4.1: Optimized for high-load scenarios)
-        self.sync_interval = 60  # Ресинхронизация каждые 60 сек (не слишком часто)
-        self.tx_timeout = 600  # Таймаут для pending TX (10 минут - терпеливо ждём в high load)
+        # Настройки (Phase 1.4.2: Optimized for high-load scenarios)
+        self.sync_interval = 5  # Ресинхронизация каждые 5 сек (быстрая синхронизация для high load)
+        self.tx_timeout = 120  # Таймаут для pending TX (2 минуты - в high load TX должны подтверждаться быстро)
 
         # Статистика
         self.stats = {
@@ -81,9 +81,8 @@ class NonceManager:
         """
         Получить следующий доступный nonce для адреса.
 
-        Phase 1.4.1: SEQUENTIAL gap-filling algorithm.
-        Always returns the FIRST missing nonce in the sequence,
-        ensuring no gaps and no duplicates.
+        Phase 1.4.2: SEQUENTIAL gap-filling algorithm (NO reservation).
+        Always returns the FIRST missing nonce in the sequence.
 
         Returns:
             Nonce для новой транзакции
@@ -129,15 +128,14 @@ class NonceManager:
             address: Адрес отправителя
             tx_hash: Hash транзакции
             nonce: Nonce транзакции
-
-        Phase 1.4.1: Simplified - no longer tracks pending_nonce here.
-        Next nonce is calculated dynamically in get_next_nonce().
         """
         with self.lock:
             # Создаём pending транзакцию
             pending_tx = PendingTransaction(tx_hash, nonce, time.time())
 
             # Добавляем в очередь pending транзакций
+            if address not in self.pending_txs:
+                self.pending_txs[address] = deque()
             self.pending_txs[address].append(pending_tx)
             self.pending_hashes.add(tx_hash)
 
@@ -210,8 +208,8 @@ class NonceManager:
         Проверяет pending транзакции на таймаут и ресинхронизирует.
         Должна вызываться периодически (например, каждые 10 секунд).
 
-        Phase 1.4.1: More tolerant timeout handling - don't trigger full resync
-        for every timeout. Just mark as failed and clean up.
+        Phase 1.4.2: Smart timeout - don't timeout TX if their nonce is already confirmed.
+        Only timeout TX that are truly stuck (nonce >= blockchain_nonce).
         """
         with self.lock:
             now = time.time()
@@ -219,13 +217,22 @@ class NonceManager:
 
             for address in list(self.pending_txs.keys()):
                 timed_out_count = 0
+                blockchain_nonce = self.blockchain_nonce.get(address, 0)
 
                 for pending_tx in list(self.pending_txs[address]):
                     age = now - pending_tx.timestamp
 
                     if age > self.tx_timeout and not pending_tx.confirmed and not pending_tx.failed:
+                        # Smart timeout: only timeout if nonce >= blockchain_nonce
+                        # If nonce < blockchain_nonce, it means TX was already processed by blockchain
+                        # and will be marked as confirmed on next sync
+                        if pending_tx.nonce < blockchain_nonce:
+                            # This TX is already confirmed on blockchain, just not synced yet
+                            # Don't timeout - let sync handle it
+                            continue
+
                         logger.warning(f"Pending TX timeout: {pending_tx.tx_hash[:8]}... "
-                                      f"(age={age:.0f}s, nonce={pending_tx.nonce})")
+                                      f"(age={age:.0f}s, nonce={pending_tx.nonce}, blockchain_nonce={blockchain_nonce})")
 
                         # Помечаем как failed
                         pending_tx.failed = True
@@ -245,16 +252,30 @@ class NonceManager:
             for address in addresses_to_sync:
                 self._force_sync(address)
 
+            # Clean up failed transactions for ALL addresses with timeouts
+            # This ensures memory doesn't grow indefinitely
+            for address in list(self.pending_txs.keys()):
+                self._cleanup_confirmed(address)
+
     def _maybe_sync(self, address: str) -> None:
         """
         Синхронизация с блокчейном если прошло достаточно времени.
+
+        Phase 1.4.1: Adaptive sync - sync more frequently if pending count is high.
+        NOTE: This method is called from within lock context, so don't use get_pending_count().
         """
         now = time.time()
+
+        # Check if pending count is high (>50) - sync more aggressively
+        # Calculate directly without additional lock (we're already in lock context)
+        pending_count = sum(1 for tx in self.pending_txs.get(address, [])
+                           if not tx.confirmed and not tx.failed)
+        adaptive_interval = self.sync_interval if pending_count < 50 else max(2, self.sync_interval // 3)
 
         need_sync = (
             address not in self.blockchain_nonce or
             address not in self.last_sync or
-            (now - self.last_sync[address]) > self.sync_interval
+            (now - self.last_sync[address]) > adaptive_interval
         )
 
         if need_sync:
@@ -313,15 +334,22 @@ class NonceManager:
         """
         Удаляет подтверждённые и failed транзакции из pending списка.
 
-        Phase 1.4.1: Also remove failed transactions to prevent blocking.
+        Phase 1.4.1: More aggressive cleanup - remove ALL confirmed/failed TX, not just from front.
         """
         if address not in self.pending_txs:
             return
 
-        # Удаляем все подтверждённые и failed TX с начала очереди
-        while self.pending_txs[address] and (self.pending_txs[address][0].confirmed or
-                                              self.pending_txs[address][0].failed):
-            self.pending_txs[address].popleft()
+        # Remove ALL confirmed and failed transactions (not just from front)
+        # This prevents memory buildup and improves performance
+        original_count = len(self.pending_txs[address])
+        self.pending_txs[address] = deque([
+            tx for tx in self.pending_txs[address]
+            if not tx.confirmed and not tx.failed
+        ])
+
+        cleaned_count = original_count - len(self.pending_txs[address])
+        if cleaned_count > 0:
+            logger.info(f"Cleaned {cleaned_count} confirmed/failed TX for {address[:10]}...")
 
         # Если очередь пустая, удаляем ключ
         if not self.pending_txs[address]:
@@ -330,12 +358,18 @@ class NonceManager:
     def get_pending_count(self, address: str) -> int:
         """Получить количество pending транзакций для адреса."""
         with self.lock:
-            return len(self.pending_txs.get(address, []))
+            # Only count transactions that are not confirmed and not failed
+            return sum(1 for tx in self.pending_txs.get(address, [])
+                      if not tx.confirmed and not tx.failed)
 
     def get_stats(self) -> Dict:
         """Получить статистику."""
         with self.lock:
-            current_pending = sum(len(txs) for txs in self.pending_txs.values())
+            # Only count transactions that are not confirmed and not failed
+            current_pending = sum(
+                sum(1 for tx in txs if not tx.confirmed and not tx.failed)
+                for txs in self.pending_txs.values()
+            )
             return {
                 **self.stats,
                 'current_pending': current_pending,

@@ -38,7 +38,7 @@ class Mempool:
         """
         Move transactions from pending queue to main pool when nonces align.
 
-        Phase 1.4.1: Nonce-aware mempool promotion logic.
+        Phase 1.4.1: Nonce-aware mempool promotion logic with balance validation.
         """
         if address not in self.pending_queue:
             return
@@ -50,6 +50,18 @@ class Mempool:
         while self.pending_queue[address]:
             next_tx = self.pending_queue[address][0]
             if next_tx.nonce == expected_nonce:
+                # Validate balance before promotion (balance may have changed while in queue)
+                total_cost = next_tx.amount + next_tx.fee
+                if account.balance < total_cost:
+                    # Insufficient balance - remove from pending queue and don't promote
+                    self.pending_queue[address].pop(0)
+                    tx_hash = next_tx.hash_hex
+                    if tx_hash in self.pending_timestamps:
+                        del self.pending_timestamps[tx_hash]
+                    logger.warning(f"Dropped tx {tx_hash[:8]} from pending queue: insufficient balance (have {account.balance}, need {total_cost})")
+                    break  # Stop promotion chain - subsequent TX depend on this one
+
+                # Balance OK - promote to main pool
                 self.pending_queue[address].pop(0)
                 self._add_to_pool(next_tx)
                 expected_nonce += 1  # Next expected nonce
@@ -140,6 +152,13 @@ class Mempool:
                 account = state.get_account(tx.from_address)
                 expected_nonce = account.nonce
 
+                # Check balance early (Ethereum-style validation)
+                # Calculate total cost: amount + fee
+                total_cost = tx.amount + tx.fee
+                if account.balance < total_cost:
+                    logger.warning(f"Reject tx {tx_hash[:8]}: insufficient balance (have {account.balance}, need {total_cost})")
+                    return False, "insufficient_balance"
+
                 if tx.nonce < expected_nonce:
                     # Stale nonce - reject
                     logger.warning(f"Reject tx {tx_hash[:8]}: nonce too low ({tx.nonce} < {expected_nonce})")
@@ -153,6 +172,7 @@ class Mempool:
                     return True, "added"
                 else:
                     # Future nonce - add to pending queue
+                    # Note: balance may change before this TX is promoted, so we re-check during promotion
                     import time
                     if tx.from_address not in self.pending_queue:
                         self.pending_queue[tx.from_address] = []

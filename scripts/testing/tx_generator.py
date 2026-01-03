@@ -74,6 +74,12 @@ class TxGenerator:
         # Uses gap-filling algorithm with periodic blockchain sync
         self.nonce_manager = NonceManager(self._get_nonce)
 
+        # Account-level locks to prevent race condition in nonce allocation
+        # Phase 1.4.3: Each account gets its own lock to ensure only one thread
+        # can generate TX for that account at a time
+        self.account_locks = {}
+        self.locks_lock = threading.Lock()  # Lock for managing account_locks dict
+
         # Set running flag BEFORE starting threads
         self.running = True
 
@@ -306,15 +312,24 @@ class TxGenerator:
             )
 
             if resp.status_code == 200:
-                # Transaction successfully sent to mempool
-                self.nonce_manager.on_tx_sent(from_address, tx_hash, nonce)
-                logger.debug(f"TX sent: {tx_hash[:8]}... (nonce={nonce})")
-                return True
+                # Check JSON response - server returns 200 even for rejected TX
+                resp_json = resp.json()
+                if resp_json.get("status") == "rejected":
+                    # Transaction rejected by mempool
+                    error_text = resp_json.get("error", "unknown error")
+                    self.nonce_manager.on_tx_failed(from_address, tx_hash, nonce, error_text)
+                    logger.warning(f"TX rejected: {tx_hash[:8]}... (nonce={nonce}): {error_text}")
+                    return False
+                else:
+                    # Transaction successfully sent to mempool
+                    self.nonce_manager.on_tx_sent(from_address, tx_hash, nonce)
+                    logger.debug(f"TX sent: {tx_hash[:8]}... (nonce={nonce})")
+                    return True
             else:
-                # Transaction rejected by mempool
+                # HTTP error
                 error_text = resp.text
                 self.nonce_manager.on_tx_failed(from_address, tx_hash, nonce, error_text)
-                logger.warning(f"TX rejected: {tx_hash[:8]}... (nonce={nonce}): {error_text}")
+                logger.warning(f"TX HTTP error: {tx_hash[:8]}... (nonce={nonce}): {error_text}")
                 return False
         except Exception as e:
             # Network error or other exception
@@ -322,16 +337,38 @@ class TxGenerator:
             logger.error(f"Broadcast error for {tx_hash[:8]}...: {e}")
             return False
 
-    def generate_send_tx(self) -> Transaction:
-        """Generate SEND transaction."""
-        sender = random.choice(self.test_accounts)
+    def generate_send_tx(self, sender=None) -> Transaction:
+        """
+        Generate SEND transaction.
+
+        Args:
+            sender: Optional sender account. If None, picks random account.
+        """
+        if sender is None:
+            sender = random.choice(self.test_accounts)
+
         recipient = random.choice(self.test_accounts)
 
         # Don't send to self
         while recipient['address'] == sender['address']:
             recipient = random.choice(self.test_accounts)
 
-        amount = random.randint(self.config['amount_min'], self.config['amount_max'])
+        # Check sender balance and use safe amount (resilient to low balance)
+        fee = 21000000  # 21M fee for TRANSFER
+        balance = self._get_balance(sender['address'])
+        reserve = 1 * (10**DECIMALS)  # Keep 1 CPC reserve for future fees
+        max_safe_amount = max(0, balance - fee - reserve)
+
+        # Use minimum of configured max and safe amount
+        amount_max = min(self.config['amount_max'], max_safe_amount)
+        amount_min = min(self.config['amount_min'], amount_max)
+
+        # If balance too low, use minimal amount
+        if amount_max < amount_min:
+            amount = amount_min
+        else:
+            amount = random.randint(amount_min, amount_max)
+
         nonce = self.nonce_manager.get_next_nonce(sender['address'])
 
         tx = Transaction(
@@ -355,9 +392,16 @@ class TxGenerator:
 
         return tx
 
-    def generate_delegate_tx(self) -> Transaction:
-        """Generate DELEGATE transaction."""
-        delegator = random.choice(self.test_accounts)
+    def generate_delegate_tx(self, delegator=None) -> Transaction:
+        """
+        Generate DELEGATE transaction.
+
+        Args:
+            delegator: Optional delegator account. If None, picks random account.
+        """
+        if delegator is None:
+            delegator = random.choice(self.test_accounts)
+
         validators = self._get_validators()
 
         if not validators:
@@ -365,7 +409,22 @@ class TxGenerator:
             return None
 
         validator = random.choice(validators)
-        amount = random.randint(100 * (10**DECIMALS), 10000 * (10**DECIMALS))
+
+        # Check delegator balance and use safe amount
+        fee = 50000000  # 50M fee for STAKE
+        balance = self._get_balance(delegator['address'])
+        reserve = 1 * (10**DECIMALS)  # Keep 1 CPC reserve
+        max_safe_amount = max(0, balance - fee - reserve)
+
+        # Use safe delegation amount
+        amount_max = min(10000 * (10**DECIMALS), max_safe_amount)
+        amount_min = min(100 * (10**DECIMALS), amount_max)
+
+        if amount_max < amount_min:
+            amount = amount_min
+        else:
+            amount = random.randint(amount_min, amount_max)
+
         nonce = self.nonce_manager.get_next_nonce(delegator['address'])
 
         tx = Transaction(
@@ -390,17 +449,33 @@ class TxGenerator:
 
         return tx
 
-    def generate_transaction(self) -> Transaction:
-        """Generate random transaction based on configured ratios."""
+    def _get_account_lock(self, address: str) -> threading.Lock:
+        """
+        Get or create lock for specific account.
+
+        Phase 1.4.3: Account-level locking to prevent race condition in nonce allocation.
+        """
+        with self.locks_lock:
+            if address not in self.account_locks:
+                self.account_locks[address] = threading.Lock()
+            return self.account_locks[address]
+
+    def generate_transaction(self, sender=None) -> Transaction:
+        """
+        Generate random transaction based on configured ratios.
+
+        Args:
+            sender: Optional sender account. If None, picks random account inside specific TX type method.
+        """
         rand = random.random()
 
         if rand < self.config['send_ratio']:
-            return self.generate_send_tx()
+            return self.generate_send_tx(sender=sender)
         elif rand < self.config['send_ratio'] + self.config['delegate_ratio']:
-            return self.generate_delegate_tx()
+            return self.generate_delegate_tx(delegator=sender)
         else:
             # For now, default to SEND
-            return self.generate_send_tx()
+            return self.generate_send_tx(sender=sender)
 
     def run(self, duration_seconds: int):
         """Run transaction generator for specified duration."""
@@ -420,31 +495,45 @@ class TxGenerator:
                     break
 
                 try:
-                    # Generate transaction
-                    tx = self.generate_transaction()
-                    if tx:
+                    # Phase 1.4.3: Account-level locking to prevent race condition
+                    # 1. Pick sender account first
+                    # 2. Get lock for sender address
+                    # 3. With lock held: check pending count, generate TX (calls get_next_nonce), broadcast
+                    # This ensures get_next_nonce() is called with lock protection
+
+                    # Pick sender account first (before lock)
+                    sender = random.choice(self.test_accounts)
+                    sender_address = sender['address']
+                    account_lock = self._get_account_lock(sender_address)
+
+                    # Acquire lock for this account
+                    with account_lock:
                         # Check if sender has too many pending transactions
-                        pending_count = self.nonce_manager.get_pending_count(tx.from_address)
+                        pending_count = self.nonce_manager.get_pending_count(sender_address)
 
                         if pending_count > 10:  # Max 10 pending TX per account
-                            logger.debug(f"Too many pending TX ({pending_count}) for {tx.from_address[:10]}..., skipping")
+                            logger.debug(f"Too many pending TX ({pending_count}) for {sender_address[:10]}..., skipping")
                             time.sleep(delay)
                             continue
 
-                        success = self._broadcast_tx(tx)
+                        # Generate transaction INSIDE lock (this calls get_next_nonce with protection)
+                        # Pass sender to ensure TX is generated for the locked account
+                        tx = self.generate_transaction(sender=sender)
+                        if tx:
+                            success = self._broadcast_tx(tx)
 
-                        # Update stats
-                        self.stats['total_sent'] += 1
-                        if success:
-                            self.stats['successful'] += 1
-                        else:
-                            self.stats['failed'] += 1
+                            # Update stats
+                            self.stats['total_sent'] += 1
+                            if success:
+                                self.stats['successful'] += 1
+                            else:
+                                self.stats['failed'] += 1
 
-                        tx_type = tx.tx_type.value
-                        self.stats['by_type'][tx_type] = self.stats['by_type'].get(tx_type, 0) + 1
+                            tx_type = tx.tx_type.value
+                            self.stats['by_type'][tx_type] = self.stats['by_type'].get(tx_type, 0) + 1
 
-                        # Sleep between transactions
-                        time.sleep(delay)
+                    # Sleep between transactions (outside lock)
+                    time.sleep(delay)
                 except KeyboardInterrupt:
                     logger.info("Interrupted by user")
                     self.print_stats()
