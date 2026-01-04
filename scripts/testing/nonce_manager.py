@@ -64,9 +64,9 @@ class NonceManager:
         # Блокировка для thread-safety
         self.lock = threading.RLock()
 
-        # Настройки (Phase 1.4.2: Optimized for high-load scenarios)
-        self.sync_interval = 5  # Ресинхронизация каждые 5 сек (быстрая синхронизация для high load)
-        self.tx_timeout = 120  # Таймаут для pending TX (2 минуты - в high load TX должны подтверждаться быстро)
+        # Настройки (Phase 1.4.3: Relaxed timeout for high-load with account locks)
+        self.sync_interval = 5  # Ресинхронизация каждые 5 сек
+        self.tx_timeout = 600  # Таймаут для pending TX (10 минут - дать время для обработки future nonces)
 
         # Статистика
         self.stats = {
@@ -223,16 +223,23 @@ class NonceManager:
                     age = now - pending_tx.timestamp
 
                     if age > self.tx_timeout and not pending_tx.confirmed and not pending_tx.failed:
-                        # Smart timeout: only timeout if nonce >= blockchain_nonce
-                        # If nonce < blockchain_nonce, it means TX was already processed by blockchain
-                        # and will be marked as confirmed on next sync
+                        # Smart timeout: only timeout truly stuck TX
+                        # Don't timeout:
+                        # 1. Already confirmed (nonce < blockchain_nonce)
+                        # 2. Valid future nonces within reasonable gap (waiting in pending queue)
                         if pending_tx.nonce < blockchain_nonce:
-                            # This TX is already confirmed on blockchain, just not synced yet
-                            # Don't timeout - let sync handle it
+                            # Already confirmed, just not synced yet
+                            continue
+
+                        # Don't timeout future nonces within reasonable gap
+                        # These are valid TX waiting in blockchain pending_queue
+                        nonce_gap = pending_tx.nonce - blockchain_nonce
+                        if nonce_gap < 100:  # Reasonable gap for high load
+                            # Still waiting in pending queue, not stuck
                             continue
 
                         logger.warning(f"Pending TX timeout: {pending_tx.tx_hash[:8]}... "
-                                      f"(age={age:.0f}s, nonce={pending_tx.nonce}, blockchain_nonce={blockchain_nonce})")
+                                      f"(age={age:.0f}s, nonce={pending_tx.nonce}, blockchain_nonce={blockchain_nonce}, gap={nonce_gap})")
 
                         # Помечаем как failed
                         pending_tx.failed = True

@@ -511,7 +511,7 @@ class TxGenerator:
                         # Check if sender has too many pending transactions
                         pending_count = self.nonce_manager.get_pending_count(sender_address)
 
-                        if pending_count > 10:  # Max 10 pending TX per account
+                        if pending_count > 50:  # Max 50 pending TX per account (relaxed for high load)
                             logger.debug(f"Too many pending TX ({pending_count}) for {sender_address[:10]}..., skipping")
                             time.sleep(delay)
                             continue
