@@ -139,6 +139,26 @@ class BlockProposer:
                 valid_txs.append(tx)
                 cumulative_gas += tx_gas
             except Exception as e:
+                error_msg = str(e)
+
+                # Check if this is a future-nonce TX (nonce gap)
+                # Don't remove future-nonce TX - they should stay in pending_queue
+                if "Invalid nonce: expected" in error_msg:
+                    # Parse expected and got nonces
+                    try:
+                        parts = error_msg.split("expected ")[1].split(", got ")
+                        expected = int(parts[0])
+                        got = int(parts[1])
+
+                        if got > expected:
+                            # Future nonce - skip but don't remove from mempool
+                            # This TX should stay in pending_queue until gaps are filled
+                            logger.debug(f"Skipping future-nonce tx {tx.hash()[:8]}...: expected {expected}, got {got}")
+                            continue
+                    except:
+                        pass  # If parsing fails, treat as truly invalid
+
+                # Truly invalid TX (bad signature, insufficient balance, nonce too low, etc.)
                 logger.warning(f"Skipping invalid tx {tx.hash()} in proposer: {e}")
                 invalid_txs.append(tx)  # Mark for removal
 
