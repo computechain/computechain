@@ -123,10 +123,15 @@ async def run_node_async(args):
         chain.rebuild_state_from_blocks()
         
     mempool = Mempool()
-    
+
     # Inject into RPC module (global vars)
     api.chain = chain
     api.mempool = mempool
+
+    # Initialize Ethereum-style pending state in mempool
+    # This allows clients to get pending nonce without complex client-side tracking
+    mempool.initialize_pending_state(chain.state)
+    logger.info("Initialized mempool pending state")
     
     # 2. Initialize P2P
     # Load persisted peers
@@ -203,6 +208,11 @@ async def run_node_async(args):
                             mempool._promote_from_pending(address, chain.state)
                         except Exception as e:
                             logger.warning(f"Error promoting pending txs for {address[:10]}...: {e}")
+
+                # Ethereum-style: Update pending state after block is added
+                # This re-applies all pending TX to new blockchain state
+                if hasattr(mempool, 'update_pending_state'):
+                    mempool.update_pending_state(chain.state)
         except ValueError as e:
             # Catch specific validation errors
             logging.warning(f"Rejected P2P block: {e}")

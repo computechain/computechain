@@ -26,12 +26,35 @@ class Mempool:
         self.pending_queue: Dict[str, List[Transaction]] = {}  # address -> future nonce transactions
         self.pending_timestamps: Dict[str, float] = {}  # tx_hash -> timestamp for pending queue
 
+        # Ethereum-style pending state (virtual state with pending TX applied)
+        # This allows clients to get pending nonce without complex tracking
+        self.pending_state: Optional['AccountState'] = None
+        self.base_state: Optional['AccountState'] = None  # Reference to blockchain state
+
+        # Per-account limits (Ethereum: 64 queued TX per account)
+        self.max_queued_per_account = 64
+
     def _add_to_pool(self, tx: Transaction):
-        """Internal helper to add transaction to main pool."""
+        """
+        Internal helper to add transaction to main pool.
+
+        Ethereum-style: Also applies TX to pending_state to keep it in sync.
+        """
         import time
         tx_hash = tx.hash_hex
         self.transactions[tx_hash] = tx
         self.tx_timestamps[tx_hash] = time.time()
+
+        # Apply to pending state (Ethereum-style)
+        if self.pending_state:
+            try:
+                self.pending_state.apply_transaction(tx, skip_crypto_check=True)
+                logger.debug(f"Applied tx {tx_hash[:8]} to pending state (nonce={tx.nonce})")
+            except Exception as e:
+                logger.warning(f"Failed to apply tx {tx_hash[:8]} to pending state: {e}")
+                # Don't fail the add - TX is still valid for mempool
+                # Pending state will be corrected on next update_pending_state()
+
         logger.info(f"Tx added to mempool: {tx_hash[:8]}...")
 
     def _promote_from_pending(self, address: str, state: 'AccountState'):
@@ -72,6 +95,90 @@ class Mempool:
         # Clean up empty pending queue
         if not self.pending_queue[address]:
             del self.pending_queue[address]
+
+    def initialize_pending_state(self, state: 'AccountState'):
+        """
+        Initialize pending state from blockchain state.
+        Called when mempool is attached to blockchain.
+
+        Ethereum-style: pending_state = virtual state with all pending TX applied.
+        """
+        with self._lock:
+            self.base_state = state
+            self.pending_state = state.clone()
+            logger.info("Initialized pending state from blockchain")
+
+    def update_pending_state(self, new_base_state: 'AccountState'):
+        """
+        Update pending state after new block is added.
+
+        Ethereum-style approach:
+        1. Clone new blockchain state
+        2. Re-apply all pending TX to new state
+        3. This keeps pending_state in sync with blockchain
+        """
+        with self._lock:
+            if not new_base_state:
+                return
+
+            self.base_state = new_base_state
+            self.pending_state = new_base_state.clone()
+
+            # Re-apply all pending TX in nonce order
+            # Group by address for sequential application
+            by_address: Dict[str, List[Transaction]] = {}
+            for tx in self.transactions.values():
+                if tx.from_address not in by_address:
+                    by_address[tx.from_address] = []
+                by_address[tx.from_address].append(tx)
+
+            # Sort by nonce per address
+            for address in by_address:
+                by_address[address].sort(key=lambda t: t.nonce)
+
+            # Apply sequentially
+            applied_count = 0
+            for address, txs in by_address.items():
+                for tx in txs:
+                    try:
+                        # Apply to pending state (skip crypto check - already validated)
+                        self.pending_state.apply_transaction(tx, skip_crypto_check=True)
+                        applied_count += 1
+                    except Exception as e:
+                        # If TX can't apply to new state, it's now invalid
+                        # This can happen if balance changed or nonce is wrong
+                        logger.warning(f"TX {tx.hash_hex[:8]} can't apply to new pending state: {e}")
+                        # Don't remove yet - let normal eviction handle it
+
+            logger.debug(f"Updated pending state: re-applied {applied_count}/{len(self.transactions)} pending TX")
+
+    def get_pending_nonce(self, address: str) -> int:
+        """
+        Get pending nonce for address (Ethereum-style).
+
+        Returns nonce from pending_state, which includes all pending TX.
+        This is what clients should use for next TX nonce.
+        """
+        with self._lock:
+            if not self.pending_state:
+                # Fallback to base state if pending not initialized
+                if self.base_state:
+                    return self.base_state.get_account(address).nonce
+                return 0
+
+            account = self.pending_state.get_account(address)
+            return account.nonce
+
+    def get_pending_balance(self, address: str) -> int:
+        """Get pending balance for address (includes pending TX effects)."""
+        with self._lock:
+            if not self.pending_state:
+                if self.base_state:
+                    return self.base_state.get_account(address).balance
+                return 0
+
+            account = self.pending_state.get_account(address)
+            return account.balance
 
     def add_transaction(self, tx: Transaction, state: Optional['AccountState'] = None) -> tuple[bool, str]:
         """
@@ -172,6 +279,13 @@ class Mempool:
                     return True, "added"
                 else:
                     # Future nonce - add to pending queue
+                    # Ethereum-style: limit queued TX per account to prevent DoS
+                    queued_count = len(self.pending_queue.get(tx.from_address, []))
+                    if queued_count >= self.max_queued_per_account:
+                        logger.warning(f"Reject tx {tx_hash[:8]}: account {tx.from_address[:10]}... "
+                                      f"exceeded queued limit ({queued_count}/{self.max_queued_per_account})")
+                        return False, "queued_limit_exceeded"
+
                     # Note: balance may change before this TX is promoted, so we re-check during promotion
                     import time
                     if tx.from_address not in self.pending_queue:
@@ -179,7 +293,7 @@ class Mempool:
                     self.pending_queue[tx.from_address].append(tx)
                     self.pending_queue[tx.from_address].sort(key=lambda t: t.nonce)
                     self.pending_timestamps[tx_hash] = time.time()
-                    logger.info(f"Tx {tx_hash[:8]} queued in pending (nonce={tx.nonce}, expected={expected_nonce})")
+                    logger.info(f"Tx {tx_hash[:8]} queued in pending (nonce={tx.nonce}, expected={expected_nonce}, queued={queued_count+1})")
                     return True, "queued_future_nonce"
             else:
                 # No state available (old path) - just add to pool

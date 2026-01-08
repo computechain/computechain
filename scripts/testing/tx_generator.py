@@ -186,7 +186,7 @@ class TxGenerator:
                 try:
                     # Send 1,000,000 CPC to each account
                     amount = 1_000_000 * (10**DECIMALS)
-                    nonce = self.nonce_manager.get_next_nonce(faucet['address'])
+                    nonce = self._get_nonce(faucet['address'])
 
                     tx = Transaction(
                         tx_type=TxType.TRANSFER,
@@ -240,8 +240,17 @@ class TxGenerator:
             return 0
 
     def _get_nonce(self, address: str) -> int:
-        """Get current nonce for address from blockchain."""
+        """
+        Get pending nonce for address from blockchain (Ethereum-style).
+
+        Uses /nonce endpoint which returns pending nonce (includes pending TX).
+        This eliminates need for complex client-side nonce tracking.
+        """
         try:
+            resp = requests.get(f"{self.node_url}/nonce/{address}", timeout=5)
+            if resp.status_code == 200:
+                return resp.json()['nonce']
+            # Fallback to /balance if /nonce not available
             resp = requests.get(f"{self.node_url}/balance/{address}", timeout=5)
             if resp.status_code == 200:
                 return resp.json()['nonce']
@@ -317,24 +326,22 @@ class TxGenerator:
                 if resp_json.get("status") == "rejected":
                     # Transaction rejected by mempool
                     error_text = resp_json.get("error", "unknown error")
-                    self.nonce_manager.on_tx_failed(from_address, tx_hash, nonce, error_text)
-                    logger.warning(f"TX rejected: {tx_hash[:8]}... (nonce={nonce}): {error_text}")
+                    logger.debug(f"TX rejected: {tx_hash[:8]}... (nonce={nonce}): {error_text}")
+                    # No client-side tracking needed - blockchain manages pending state
                     return False
                 else:
                     # Transaction successfully sent to mempool
-                    self.nonce_manager.on_tx_sent(from_address, tx_hash, nonce)
                     logger.debug(f"TX sent: {tx_hash[:8]}... (nonce={nonce})")
+                    # No client-side tracking needed - blockchain manages pending state
                     return True
             else:
                 # HTTP error
                 error_text = resp.text
-                self.nonce_manager.on_tx_failed(from_address, tx_hash, nonce, error_text)
-                logger.warning(f"TX HTTP error: {tx_hash[:8]}... (nonce={nonce}): {error_text}")
+                logger.debug(f"TX HTTP error: {tx_hash[:8]}... (nonce={nonce}): {error_text}")
                 return False
         except Exception as e:
             # Network error or other exception
-            self.nonce_manager.on_tx_failed(from_address, tx_hash, nonce, str(e))
-            logger.error(f"Broadcast error for {tx_hash[:8]}...: {e}")
+            logger.debug(f"Broadcast error for {tx_hash[:8]}...: {e}")
             return False
 
     def generate_send_tx(self, sender=None) -> Transaction:
@@ -369,7 +376,8 @@ class TxGenerator:
         else:
             amount = random.randint(amount_min, amount_max)
 
-        nonce = self.nonce_manager.get_next_nonce(sender['address'])
+        # Ethereum-style: get pending nonce directly from blockchain
+        nonce = self._get_nonce(sender['address'])
 
         tx = Transaction(
             tx_type=TxType.TRANSFER,
@@ -425,7 +433,9 @@ class TxGenerator:
         else:
             amount = random.randint(amount_min, amount_max)
 
-        nonce = self.nonce_manager.get_next_nonce(delegator['address'])
+        # Ethereum-style: get pending nonce directly from blockchain
+        # No client-side nonce management needed
+        nonce = self._get_nonce(delegator['address'])
 
         tx = Transaction(
             tx_type=TxType.STAKE,
@@ -495,44 +505,29 @@ class TxGenerator:
                     break
 
                 try:
-                    # Phase 1.4.3: Account-level locking to prevent race condition
-                    # 1. Pick sender account first
-                    # 2. Get lock for sender address
-                    # 3. With lock held: check pending count, generate TX (calls get_next_nonce), broadcast
-                    # This ensures get_next_nonce() is called with lock protection
+                    # Ethereum-style: Simple TX generation with pending nonce
+                    # No client-side locks or throttling needed
+                    # Blockchain enforces queued TX limits per account (64)
 
-                    # Pick sender account first (before lock)
+                    # Pick random sender
                     sender = random.choice(self.test_accounts)
-                    sender_address = sender['address']
-                    account_lock = self._get_account_lock(sender_address)
 
-                    # Acquire lock for this account
-                    with account_lock:
-                        # Check if sender has too many pending transactions
-                        pending_count = self.nonce_manager.get_pending_count(sender_address)
+                    # Generate transaction (gets pending nonce from blockchain)
+                    tx = self.generate_transaction(sender=sender)
+                    if tx:
+                        success = self._broadcast_tx(tx)
 
-                        if pending_count > 50:  # Max 50 pending TX per account (relaxed for high load)
-                            logger.debug(f"Too many pending TX ({pending_count}) for {sender_address[:10]}..., skipping")
-                            time.sleep(delay)
-                            continue
+                        # Update stats
+                        self.stats['total_sent'] += 1
+                        if success:
+                            self.stats['successful'] += 1
+                        else:
+                            self.stats['failed'] += 1
 
-                        # Generate transaction INSIDE lock (this calls get_next_nonce with protection)
-                        # Pass sender to ensure TX is generated for the locked account
-                        tx = self.generate_transaction(sender=sender)
-                        if tx:
-                            success = self._broadcast_tx(tx)
+                        tx_type = tx.tx_type.value
+                        self.stats['by_type'][tx_type] = self.stats['by_type'].get(tx_type, 0) + 1
 
-                            # Update stats
-                            self.stats['total_sent'] += 1
-                            if success:
-                                self.stats['successful'] += 1
-                            else:
-                                self.stats['failed'] += 1
-
-                            tx_type = tx.tx_type.value
-                            self.stats['by_type'][tx_type] = self.stats['by_type'].get(tx_type, 0) + 1
-
-                    # Sleep between transactions (outside lock)
+                    # Sleep between transactions
                     time.sleep(delay)
                 except KeyboardInterrupt:
                     logger.info("Interrupted by user")

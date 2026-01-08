@@ -76,6 +76,36 @@ async def get_balance(address: str):
         "nonce": acc.nonce
     }
 
+@app.get("/nonce/{address}")
+async def get_pending_nonce(address: str, pending: bool = True):
+    """
+    Get nonce for address (Ethereum-style).
+
+    Args:
+        address: Account address
+        pending: If True (default), returns pending nonce (includes pending TX)
+                If False, returns confirmed nonce (blockchain state only)
+
+    Returns:
+        {"address": str, "nonce": int, "pending": bool}
+    """
+    if not chain:
+        raise HTTPException(status_code=503, detail="Node not initialized")
+
+    if pending and mempool and hasattr(mempool, 'get_pending_nonce'):
+        # Ethereum-style: get nonce from pending state
+        nonce = mempool.get_pending_nonce(address)
+    else:
+        # Fallback: get confirmed nonce from blockchain state
+        acc = chain.state.get_account(address)
+        nonce = acc.nonce
+
+    return {
+        "address": address,
+        "nonce": nonce,
+        "pending": pending
+    }
+
 @app.get("/validators")
 async def get_validators():
     if not chain:
