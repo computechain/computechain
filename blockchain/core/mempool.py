@@ -156,18 +156,37 @@ class Mempool:
         """
         Get pending nonce for address (Ethereum-style).
 
-        Returns nonce from pending_state, which includes all pending TX.
+        Returns next available nonce considering:
+        1. Confirmed nonce from blockchain
+        2. Ready TX in main pool (pending_state)
+        3. Queued TX in pending_queue (future nonces)
+
         This is what clients should use for next TX nonce.
         """
         with self._lock:
-            if not self.pending_state:
-                # Fallback to base state if pending not initialized
-                if self.base_state:
-                    return self.base_state.get_account(address).nonce
-                return 0
+            # Start with confirmed nonce
+            confirmed_nonce = 0
+            if self.base_state:
+                confirmed_nonce = self.base_state.get_account(address).nonce
+            elif self.pending_state:
+                # Fallback to pending state
+                confirmed_nonce = self.pending_state.get_account(address).nonce
 
-            account = self.pending_state.get_account(address)
-            return account.nonce
+            # Find max nonce from all TX (ready + queued)
+            max_nonce = confirmed_nonce
+
+            # Check ready TX in main pool
+            for tx in self.transactions.values():
+                if tx.from_address == address and tx.nonce >= max_nonce:
+                    max_nonce = tx.nonce + 1
+
+            # Check queued TX (future nonces)
+            if address in self.pending_queue:
+                for tx in self.pending_queue[address]:
+                    if tx.nonce >= max_nonce:
+                        max_nonce = tx.nonce + 1
+
+            return max_nonce
 
     def get_pending_balance(self, address: str) -> int:
         """Get pending balance for address (includes pending TX effects)."""
