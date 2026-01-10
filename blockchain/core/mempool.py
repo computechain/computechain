@@ -154,14 +154,14 @@ class Mempool:
 
     def get_pending_nonce(self, address: str) -> int:
         """
-        Get pending nonce for address (Ethereum-style).
+        Get pending nonce for address (Ethereum-style with gap-filling).
 
-        Returns next available nonce considering:
-        1. Confirmed nonce from blockchain
-        2. Ready TX in main pool (pending_state)
-        3. Queued TX in pending_queue (future nonces)
+        Returns FIRST MISSING nonce in sequence:
+        1. Start from confirmed nonce
+        2. Find all pending nonces (ready + queued)
+        3. Return first gap in sequence
 
-        This is what clients should use for next TX nonce.
+        This prevents nonce gaps that cause TX to stuck in pending_queue.
         """
         with self._lock:
             # Start with confirmed nonce
@@ -169,24 +169,37 @@ class Mempool:
             if self.base_state:
                 confirmed_nonce = self.base_state.get_account(address).nonce
             elif self.pending_state:
-                # Fallback to pending state
                 confirmed_nonce = self.pending_state.get_account(address).nonce
 
-            # Find max nonce from all TX (ready + queued)
-            max_nonce = confirmed_nonce
+            # Collect ALL pending nonces (ready + queued), sorted
+            pending_nonces = []
 
-            # Check ready TX in main pool
+            # From main pool (ready TX)
             for tx in self.transactions.values():
-                if tx.from_address == address and tx.nonce >= max_nonce:
-                    max_nonce = tx.nonce + 1
+                if tx.from_address == address:
+                    pending_nonces.append(tx.nonce)
 
-            # Check queued TX (future nonces)
+            # From pending queue (future nonces)
             if address in self.pending_queue:
                 for tx in self.pending_queue[address]:
-                    if tx.nonce >= max_nonce:
-                        max_nonce = tx.nonce + 1
+                    pending_nonces.append(tx.nonce)
 
-            return max_nonce
+            # Sort nonces
+            pending_nonces.sort()
+
+            # Find first gap in sequence (gap-filling algorithm)
+            expected_nonce = confirmed_nonce
+            for nonce in pending_nonces:
+                if nonce == expected_nonce:
+                    # This nonce exists, move to next
+                    expected_nonce += 1
+                elif nonce > expected_nonce:
+                    # Gap found! Return the missing nonce
+                    return expected_nonce
+                # if nonce < expected_nonce: it's stale (already confirmed), skip
+
+            # No gaps, return next sequential nonce
+            return expected_nonce
 
     def get_pending_balance(self, address: str) -> int:
         """Get pending balance for address (includes pending TX effects)."""
