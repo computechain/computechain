@@ -60,6 +60,9 @@ monitoring/
 # Documentation (separate nested repo, not pushed)
 docs/
 
+# Explorer (separate nested repo, not pushed)
+explorer/
+
 # IDE
 .idea/
 .vscode/
