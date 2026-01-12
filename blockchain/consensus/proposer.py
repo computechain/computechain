@@ -225,6 +225,10 @@ class BlockProposer:
                     except Exception as e:
                         logger.warning(f"Error promoting pending txs for {address[:10]}...: {e}")
 
+            # Ethereum-style: Update pending state after block is added
+            if hasattr(self.mempool, 'update_pending_state'):
+                self.mempool.update_pending_state(self.chain.state)
+
             # Prune stale transactions (transactions with old nonces)
             try:
                 # Phase 1.4: Cleanup expired TXs before pruning stale
