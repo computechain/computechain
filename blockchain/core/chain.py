@@ -467,6 +467,11 @@ class Blockchain:
         # 7. Persist
         self.state.persist()
         self.db.save_block(block.header.height, block.hash(), block.model_dump_json())
+        for tx in block.txs:
+            try:
+                self.db.set_tx_index(tx.hash(), block.header.height, tx.model_dump_json())
+            except Exception:
+                pass
         
         # 8. Update Consensus Engine with new state
         # We reload from state to ensure consistency
@@ -732,6 +737,7 @@ class Blockchain:
         
         # 1. Clear state tables
         self.db.clear_state()
+        self.db.clear_tx_index()
         self.state = AccountState.empty(self.db)
         self.height = -1
         self.last_hash = "0" * 64
@@ -754,6 +760,10 @@ class Blockchain:
             # Apply transactions
             for tx in block.txs:
                 self.state.apply_transaction(tx, current_height=block.header.height)
+                try:
+                    self.db.set_tx_index(tx.hash(), block.header.height, tx.model_dump_json())
+                except Exception:
+                    pass
 
             # Check state_root BEFORE any post-TX operations (matches proposer/validator flow)
             actual_root = self.state.compute_state_root()

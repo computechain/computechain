@@ -26,6 +26,14 @@ class StorageDB:
                     height INTEGER
                 )
             ''')
+            # Tx index for receipt lookup
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tx_index (
+                    hash TEXT PRIMARY KEY,
+                    height INTEGER,
+                    data TEXT
+                )
+            ''')
             # State table: Key-Value store for account state
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS state (
@@ -71,7 +79,31 @@ class StorageDB:
                 self.cursor.execute("DELETE FROM blocks WHERE height=?", (height,))
                 # 3. Delete from index
                 self.cursor.execute("DELETE FROM block_index WHERE hash=?", (block_hash,))
+                # 4. Delete tx index entries for that height
+                self.cursor.execute("DELETE FROM tx_index WHERE height=?", (height,))
                 self.conn.commit()
+
+    # --- Tx Index Methods ---
+    def set_tx_index(self, tx_hash: str, height: int, data: str):
+        with self._lock:
+            self.cursor.execute(
+                "INSERT OR REPLACE INTO tx_index (hash, height, data) VALUES (?, ?, ?)",
+                (tx_hash, height, data)
+            )
+            self.conn.commit()
+
+    def get_tx_by_hash(self, tx_hash: str) -> Optional[Tuple[int, str]]:
+        with self._lock:
+            self.cursor.execute("SELECT height, data FROM tx_index WHERE hash=?", (tx_hash,))
+            row = self.cursor.fetchone()
+            if row:
+                return row[0], row[1]
+            return None
+
+    def clear_tx_index(self):
+        with self._lock:
+            self.cursor.execute("DELETE FROM tx_index")
+            self.conn.commit()
 
     # --- State Methods ---
     def get_state(self, key: str) -> Optional[str]:

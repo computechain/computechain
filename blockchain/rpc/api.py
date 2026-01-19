@@ -325,13 +325,22 @@ async def get_tx_receipt(tx_hash: str):
         raise HTTPException(status_code=503, detail="Node not initialized")
 
     try:
-        from blockchain.core.tx_receipt import tx_receipt_store
+        from blockchain.core.tx_receipt import tx_receipt_store, TxReceipt
 
         receipt = tx_receipt_store.get(tx_hash)
         if not receipt:
-            raise HTTPException(status_code=404, detail="Transaction not found")
+            # Fallback: derive confirmed receipt from block index
+            tx_entry = chain.db.get_tx_by_hash(tx_hash)
+            if not tx_entry:
+                raise HTTPException(status_code=404, detail="Transaction not found")
 
-        # Calculate confirmations if confirmed
+            block_height, _ = tx_entry
+            receipt = TxReceipt(
+                tx_hash=tx_hash,
+                status='confirmed',
+                block_height=block_height,
+            )
+
         confirmations = None
         if receipt.status == 'confirmed' and receipt.block_height is not None:
             confirmations = tx_receipt_store.get_confirmations(tx_hash, chain.height)

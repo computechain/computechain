@@ -75,6 +75,10 @@ class TxReceiptStore:
             Created receipt
         """
         with self.lock:
+            existing = self.receipts.get(tx_hash)
+            if existing and existing.status == 'confirmed':
+                return existing
+
             receipt = TxReceipt(
                 tx_hash=tx_hash,
                 status='pending',
