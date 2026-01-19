@@ -4,6 +4,7 @@ import sys
 import logging
 import asyncio
 import json
+import shutil
 from uvicorn import Config, Server
 from ...protocol.crypto.keys import generate_private_key, public_key_from_private
 from ...protocol.crypto.addresses import address_from_pubkey
@@ -22,7 +23,46 @@ def cmd_init(args):
     """Initialize node: create keys, genesis (mock), data dir."""
     data_dir = args.datadir
     os.makedirs(data_dir, exist_ok=True)
-    
+
+    # === Shared Genesis Mode ===
+    # If --genesis is provided, use shared genesis for multi-validator setup
+    if hasattr(args, 'genesis') and args.genesis:
+        print(f"Initializing with shared genesis: {args.genesis}")
+
+        # Copy shared genesis
+        genesis_dest = os.path.join(data_dir, "genesis.json")
+        shutil.copy(args.genesis, genesis_dest)
+        print(f"  Copied genesis to {genesis_dest}")
+
+        # Copy validator key if provided
+        key_path = os.path.join(data_dir, "validator_key.hex")
+        if hasattr(args, 'validator_key') and args.validator_key:
+            shutil.copy(args.validator_key, key_path)
+            os.chmod(key_path, 0o600)
+            print(f"  Copied validator key to {key_path}")
+
+            # Print validator info
+            with open(key_path, "r") as f:
+                priv_hex = f.read().strip()
+            pub = public_key_from_private(bytes.fromhex(priv_hex))
+            addr = address_from_pubkey(pub, prefix="cpcvalcons")
+            print(f"  Validator address: {addr}")
+        else:
+            print("  Warning: No --validator-key provided. Node will run as read-only.")
+
+        # Copy faucet key if provided
+        faucet_path = os.path.join(data_dir, "faucet_key.hex")
+        if hasattr(args, 'faucet_key') and args.faucet_key:
+            shutil.copy(args.faucet_key, faucet_path)
+            os.chmod(faucet_path, 0o600)
+            print(f"  Copied faucet key to {faucet_path}")
+
+        print(f"\nNode initialized in {data_dir} (shared genesis mode)")
+        return
+
+    # === Legacy Mode ===
+    # Generate unique genesis for this node (single-node testing)
+
     # Generate Validator Key if not exists
     key_path = os.path.join(data_dir, "validator_key.hex")
     if not os.path.exists(key_path):
@@ -213,16 +253,35 @@ async def run_node_async(args):
                 # This re-applies all pending TX to new blockchain state
                 if hasattr(mempool, 'update_pending_state'):
                     mempool.update_pending_state(chain.state)
+
+                # Gossip: Rebroadcast block to all peers (except sender)
+                # The idempotency check at the start prevents infinite loops
+                await p2p_node.broadcast_block(block)
         except ValueError as e:
             # Catch specific validation errors
+            error_msg = str(e)
             logging.warning(f"Rejected P2P block: {e}")
-            # If it's a prev_hash mismatch during sync, try to rollback
-            if "Invalid prev_hash" in str(e) and p2p_node.sync_state == SyncState.SYNCING:
-                logger.info(f"Attempting rollback due to prev_hash mismatch at height {chain.height}")
-                chain.rollback_last_block()
-                # The sync logic in P2PNode will re-request from the new height
+
+            # During sync, if validation fails due to chain divergence, try rollback
+            # This handles forks where validator set or prev_hash doesn't match
+            if p2p_node.sync_state == SyncState.SYNCING:
+                divergence_errors = [
+                    "Invalid prev_hash",
+                    "Could not determine expected proposer",
+                    "Invalid proposer"
+                ]
+                if any(err in error_msg for err in divergence_errors):
+                    if chain.height > 0:
+                        logger.info(f"Fork detected during sync ({error_msg[:50]}...). Rolling back block {chain.height}...")
+                        chain.rollback_last_block()
+                        # P2P layer will re-request from the new height
+
+            # Re-raise to let P2P layer trigger catchup sync
+            raise
         except Exception as e:
             logging.warning(f"Rejected P2P block: {e}")
+            # Re-raise to let P2P layer trigger catchup sync
+            raise
 
     async def on_p2p_tx(tx):
         try:
@@ -237,6 +296,12 @@ async def run_node_async(args):
     p2p_node.get_last_hash = lambda: chain.last_block_hash if chain.last_block_hash else ("0"*64)
     p2p_node.get_genesis_hash = lambda: chain.genesis_hash
     p2p_node.get_blocks_range = chain.get_blocks_range
+    p2p_node.get_headers_range = chain.get_headers_range
+    p2p_node.get_block_by_height = chain.get_block
+    p2p_node.rollback_to_height = chain.rollback_to_height
+    p2p_node.get_latest_snapshot_height = chain.get_latest_snapshot_height
+    p2p_node.get_snapshot_bytes = chain.get_snapshot_bytes
+    p2p_node.apply_snapshot_bytes = chain.load_snapshot_from_bytes
 
     # 5. Start Services
     
@@ -289,7 +354,10 @@ def main():
     
     # Init command
     init_parser = subparsers.add_parser("init", help="Initialize node configuration")
-    
+    init_parser.add_argument("--genesis", help="Path to shared genesis.json (for multi-validator setup)")
+    init_parser.add_argument("--validator-key", help="Path to validator key file to copy")
+    init_parser.add_argument("--faucet-key", help="Path to faucet key file to copy")
+
     # Run command
     run_parser = subparsers.add_parser("run", help="Run the node")
     run_parser.add_argument("--host", default="0.0.0.0", help="RPC Host")

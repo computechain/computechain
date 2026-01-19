@@ -161,6 +161,35 @@ class Blockchain:
             logger.error(f"Fast sync failed: {e}")
             return False
 
+    def get_latest_snapshot_height(self) -> Optional[int]:
+        """Returns latest snapshot height if snapshot system is enabled."""
+        if not self.snapshot_manager:
+            return None
+        return self.snapshot_manager.get_latest_snapshot_height()
+
+    def get_snapshot_bytes(self, height: int) -> Optional[bytes]:
+        """Returns raw snapshot file bytes (gzip) for a given height."""
+        if not self.snapshot_manager:
+            return None
+        snapshot_path = self.snapshot_manager._get_snapshot_path(height)
+        if not snapshot_path.exists():
+            return None
+        try:
+            return snapshot_path.read_bytes()
+        except Exception:
+            return None
+
+    def load_snapshot_from_bytes(self, height: int, data: bytes) -> bool:
+        """Save snapshot bytes and load state from it."""
+        if not self.snapshot_manager:
+            return False
+        try:
+            self.snapshot_manager.save_snapshot_bytes(height, data)
+            return self.load_from_snapshot(height)
+        except Exception as e:
+            logger.error(f"Failed to load snapshot from bytes: {e}")
+            return False
+
     # --- Thread-safe wrappers ---
     def add_block(self, block: Block) -> bool:
         with self._lock:
@@ -169,6 +198,10 @@ class Blockchain:
     def rollback_last_block(self):
         with self._lock:
             self._rollback_last_block_impl()
+
+    def rollback_to_height(self, target_height: int):
+        with self._lock:
+            self._rollback_to_height_impl(target_height)
 
     def rebuild_state_from_blocks(self):
         with self._lock:
@@ -270,6 +303,20 @@ class Blockchain:
                 break # Stop if gap found (should not happen if requesting <= height)
         return blocks
 
+    def get_headers_range(self, from_height: int, to_height: int) -> List[BlockHeader]:
+        """Returns block headers in range [from_height, to_height] inclusive."""
+        headers = []
+        if from_height < 0:
+            from_height = 0
+
+        for h in range(from_height, to_height + 1):
+            blk = self.get_block(h)
+            if blk:
+                headers.append(blk.header)
+            else:
+                break
+        return headers
+
 
     def _add_block_impl(self, block: Block) -> bool:
         # 1. Basic Validation
@@ -350,13 +397,10 @@ class Blockchain:
             else:
                 logger.warning("No validators in set! Accepting block from anyone (Bootstrap mode).")
 
-        # 2.5. Track Performance (Phase 0)
-        # Track proposer performance
-        self._track_proposer_performance(block)
-        # Track missed blocks (if any)
-        self._track_missed_blocks(block)
-
         # 3. Simulation / Validate Transactions
+        # NOTE: Performance tracking moved to AFTER state validation to avoid
+        # state_root mismatch. The proposer doesn't include tracking updates
+        # when computing state_root, so validators shouldn't either.
         tmp_state = self.state.clone()
         
         valid_txs = []
@@ -364,7 +408,7 @@ class Blockchain:
         
         for tx in block.txs:
             try:
-                tmp_state.apply_transaction(tx, current_height=block.header.height, skip_crypto_check=True)
+                tmp_state.apply_transaction(tx, current_height=block.header.height, skip_crypto_check=False)
                 valid_txs.append(tx)
                 cumulative_gas += GAS_PER_TYPE.get(tx.tx_type, 0)
             except Exception as e:
@@ -411,6 +455,14 @@ class Blockchain:
 
         # 6.2 Process Unbonding Queue (Phase 1.2)
         self.state.process_unbonding_queue(block.header.height)
+
+        # 6.3 Track Performance (Phase 0)
+        # NOTE: This is done AFTER state validation and state assignment
+        # to avoid state_root mismatch. The proposer doesn't include tracking
+        # updates when computing state_root. These updates are NOT part of
+        # consensus but are used locally for validator scoring at epoch boundaries.
+        self._track_proposer_performance(block)
+        self._track_missed_blocks(block)
 
         # 7. Persist
         self.state.persist()
@@ -681,6 +733,9 @@ class Blockchain:
         # 1. Clear state tables
         self.db.clear_state()
         self.state = AccountState.empty(self.db)
+        self.height = -1
+        self.last_hash = "0" * 64
+        self.last_block_timestamp = 0
         
         # 2. Re-apply genesis allocation
         self._apply_genesis_allocation()
@@ -699,20 +754,33 @@ class Blockchain:
             # Apply transactions
             for tx in block.txs:
                 self.state.apply_transaction(tx, current_height=block.header.height)
-            
-            # Epoch Logic Replay
-            if (h + 1) % self.config.epoch_length_blocks == 0:
-                 self._process_epoch_transition(self.state)
 
-            # Check root
+            # Check state_root BEFORE any post-TX operations (matches proposer/validator flow)
             actual_root = self.state.compute_state_root()
             if block.header.state_root and block.header.state_root != actual_root:
                  logger.warning(f"State root mismatch at {h}: expected {block.header.state_root}, got {actual_root}")
+
+            # Epoch Logic Replay (AFTER state_root check)
+            if (h + 1) % self.config.epoch_length_blocks == 0:
+                 self._process_epoch_transition(self.state)
+
+            # Distribute rewards and process unbondings (match add_block flow)
+            self._distribute_rewards(block, self.state)
+            self.state.process_unbonding_queue(block.header.height)
+            self._track_proposer_performance(block)
+            self._track_missed_blocks(block)
 
             # Check PoC root
             expected_poc_root = self.compute_poc_root(block.txs)
             if block.header.compute_root and block.header.compute_root != expected_poc_root:
                  logger.warning(f"PoC root mismatch at {h}: expected {block.header.compute_root}, got {expected_poc_root}")
+
+            # Update consensus and chain tips
+            if (h + 1) % self.config.epoch_length_blocks == 0:
+                self._update_consensus_from_state()
+            self.height = block.header.height
+            self.last_hash = block.hash()
+            self.last_block_timestamp = block.header.timestamp
         
         # 4. Save final state
         self.state.persist()
@@ -730,6 +798,16 @@ class Blockchain:
         current_height = self.height + 1
 
         logger.info(f"=== Epoch {state.epoch_index} Transition (Block {current_height}) ===")
+
+        # 0. Reset inactive validators' stats BEFORE filtering (recovery mechanism)
+        # This allows validators who were deactivated to rejoin with a clean slate
+        for v in all_vals:
+            if not v.is_active:
+                v.blocks_expected = 0
+                v.blocks_proposed = 0
+                v.uptime_score = 1.0  # Fresh start
+                state.set_validator(v)
+                logger.debug(f"  Reset inactive validator {v.address[:12]} for potential rejoin")
 
         # 1. Filter candidates: sufficient stake and NOT jailed
         candidates = [
@@ -922,11 +1000,23 @@ class Blockchain:
 
     def _start_epoch_tracking(self, state: AccountState):
         """
-        Initializes expected_blocks counter for active validators at epoch start.
-        Calculates how many blocks each validator should produce in the epoch.
+        Initializes expected_blocks counter for validators at epoch start.
+        - Active validators: set blocks_expected based on round-robin distribution
+        - Inactive validators: reset blocks_expected to 0 (clean slate for rejoin)
         """
-        active_vals = [v for v in state.get_all_validators() if v.is_active]
+        all_vals = state.get_all_validators()
+        active_vals = [v for v in all_vals if v.is_active]
         blocks_per_epoch = self.config.epoch_length_blocks
+
+        # Reset stats for ALL validators first (allows inactive ones to rejoin)
+        for v in all_vals:
+            if not v.is_active:
+                # Reset inactive validators - gives them clean slate for next epoch filter
+                # (filter passes if blocks_expected == 0)
+                v.blocks_expected = 0
+                v.blocks_proposed = 0
+                state.set_validator(v)
+                logger.debug(f"Epoch tracking: {v.address[:12]} (inactive) reset for potential rejoin")
 
         if not active_vals:
             return
@@ -960,3 +1050,21 @@ class Blockchain:
         self.rebuild_state_from_blocks()
         
         logger.info(f"Chain rolled back to height {self.height}.")
+
+    def _rollback_to_height_impl(self, target_height: int):
+        """
+        Roll back chain to a specific height (inclusive).
+        Deletes blocks above target_height and rebuilds state.
+        """
+        if target_height < -1:
+            raise ValueError("target_height must be >= -1")
+        if self.height <= target_height:
+            return
+
+        logger.warning(f"Rolling back chain from height {self.height} to {target_height}...")
+        for h in range(self.height, target_height, -1):
+            self.db.delete_block(h)
+
+        self._load_chain_state()
+        self._rebuild_state_from_blocks_impl()
+        logger.info(f"Chain rollback complete. Current height: {self.height}")

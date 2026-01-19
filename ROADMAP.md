@@ -1,7 +1,7 @@
 # ComputeChain - General Roadmap (Revised)
 
-> **Last Updated:** December 25, 2025
-> **Status:** Draft v8 (Phase 1.4 Performance & Scalability analysis, Phase 1.5 Transaction Tracking completed)
+> **Last Updated:** January 13, 2026
+> **Status:** Draft v8 (CRITICAL: State Synchronization Bug identified, start_test.sh updated for 5 validators)
 > **Timeline:** ~12 months to Mainnet Launch (approximate)
 
 ---
@@ -44,15 +44,26 @@
 
 ### ⚠️ Technical Debt & Critical Gaps
 
-**Delegation System:**
-- Individual delegation tracking (currently only total_delegated)
-- Proportional reward distribution to delegators
-- Unbonding period for undelegations
+**🚨 CRITICAL: State Synchronization Bug (Discovered Jan 2026)**
+- **Problem:** Validator state not replicated across nodes
+  - When a validator stakes on node A, only node A sees the new validator
+  - Other nodes (B, C, D, E) don't receive the updated validator set
+  - Result: Only node that processed STAKE TX includes validator in block production
+- **Impact:** Multi-validator networks broken; only 1 node proposes blocks
+- **Root Cause:** State changes from transactions not propagated via P2P
+- **Priority:** CRITICAL - blocks multi-validator testing and production
+- **Workaround:** None currently; requires architecture fix
+- **Related:** start_test.sh updated to setup 5 validators, but sync issue prevents proper operation
+
+**Delegation System:** ✅ COMPLETED
+- ~~Individual delegation tracking (currently only total_delegated)~~
+- ~~Proportional reward distribution to delegators~~
+- ~~Unbonding period for undelegations~~
 
 **Infrastructure:**
-- State snapshots / fast sync
-- Observability (metrics, alerts, profiling)
-- Upgrade protocol (versioning, state migration)
+- ~~State snapshots / fast sync~~ ✅ COMPLETED
+- ~~Observability (metrics, alerts, profiling)~~ ✅ COMPLETED
+- ~~Upgrade protocol (versioning, state migration)~~ ✅ COMPLETED
 - Storage migration path (SQLite → RocksDB for production)
 
 **Security & Testing:**
@@ -296,7 +307,25 @@ User Capacity:
 - ✅ Low load (1-5 TPS) stable for 12+ hours
 - **Recommendation:** Use medium load for 24-hour stress test
 
-#### 1.5 Security & Testing ⭐ CRITICAL
+#### 1.5 State Synchronization Fix ⭐ CRITICAL BLOCKER ✅ **COMPLETED (Jan 13, 2026)**
+
+- [x] **Multi-Node State Replication** ⭐ CRITICAL ✅ **FIXED**
+  - **Root Cause Found:** Each node created its own genesis.json with only its own validator
+  - **Result:** Different genesis hashes → P2P rejected connections → blocks didn't propagate
+  - **Solution Implemented:**
+    - [x] Created `scripts/generate_genesis.py` - generates shared genesis with all validators
+    - [x] Modified `blockchain/cli/node_cli.py` - added `--genesis` flag for shared genesis
+    - [x] Updated `start_test.sh` - uses shared genesis workflow
+    - [x] Added validators to state_root for consensus verification
+  - **Implementation:**
+    - `scripts/generate_genesis.py` - NEW
+    - `blockchain/cli/node_cli.py:22-61` - shared genesis mode
+    - `blockchain/core/state.py:569-634` - validators in state_root
+    - `start_test.sh` - complete rewrite of init section
+  - **Acceptance:** All nodes see same validator set ✅
+  - **Testing:** `./start_test.sh low 1` creates 5 validators, all 5 propose blocks
+
+#### 1.6 Security & Testing ⭐ CRITICAL
 
 - [x] **Transaction Lifecycle Tracking** ⭐ PRODUCTION CRITICAL ✅ **COMPLETED (Dec 25, 2025)**
   - Implemented SSE event system for cross-process communication ✅
@@ -331,7 +360,7 @@ User Capacity:
   - Memory leak detection (valgrind)
   - **Acceptance:** Zero crashes, memory stable
 
-#### 1.6 Documentation
+#### 1.7 Documentation
 - [ ] **Node Operator Guide**
   - Hardware requirements (CPU, RAM, disk, network)
   - Setup script (`./setup_node.sh`)
@@ -1142,6 +1171,24 @@ All critical infrastructure items from the 2-week plan have been completed:
 **v5 (Dec 17, 2025):** Updated with Phase 1.2 Economic Model v2.0 completion
 **v6 (Dec 17, 2025):** Phase 1.2 FULLY COMPLETED, Phase 1.3 Prometheus metrics started
 **v7 (Dec 17, 2025):** Phase 1.3 Infrastructure & Observability COMPLETED (Snapshots, Metrics, Upgrade Protocol)
+**v8 (Jan 13, 2026):** State Synchronization Bug IDENTIFIED and FIXED
+
+**Key Changes in v8:**
+- 🚨 **CRITICAL BUG IDENTIFIED AND FIXED:** State Synchronization across nodes
+  - **Root Cause:** Each node created its own genesis.json with only its own validator
+  - **Result:** Different genesis hashes → P2P rejected → blocks didn't propagate
+  - **Solution:** Shared genesis approach - all nodes start with identical genesis
+- **Phase 1.5 COMPLETED:** State Synchronization Fix
+  - Created `scripts/generate_genesis.py` - generates shared genesis with N validators
+  - Modified `blockchain/cli/node_cli.py` - added `--genesis`, `--validator-key`, `--faucet-key` flags
+  - Updated `start_test.sh` - uses shared genesis workflow
+  - Added validators to `state_root` for consensus verification (`state.py:569-634`)
+- **New Validator Joining Flow:** Now works correctly
+  - New validator sends STAKE TX
+  - Block propagates to all nodes (same genesis hash)
+  - All nodes apply STAKE TX → validator added everywhere
+  - State root includes validators → consensus verified
+  - At epoch boundary → validator becomes active on all nodes
 
 **Key Changes in v2:**
 - Split Phase 2 into 2A (PoC Core) and 2B (Marketplace)

@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
+import json
 from ..crypto.hash import sha256, sha256_hex
 from .common import TxType
 from ..crypto.keys import sign as crypto_sign
@@ -24,7 +25,14 @@ class Transaction(BaseModel):
     def hash(self) -> str:
         # Handle optional fields safely for hashing
         to_addr = self.to_address if self.to_address else ""
-        
+
+        payload_json = json.dumps(
+            self.payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+
         payload_str = (
             self.tx_type.value
             + self.from_address
@@ -32,6 +40,9 @@ class Transaction(BaseModel):
             + str(self.amount)
             + str(self.fee)
             + str(self.nonce)
+            + str(self.gas_price)
+            + str(self.gas_limit)
+            + payload_json
             + self.pub_key  # Include pub_key in hash
         )
         return sha256_hex(payload_str.encode("utf-8"))

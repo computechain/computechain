@@ -304,6 +304,28 @@ class TxGenerator:
             logger.warning(f"Failed to get validators: {e}")
             return []
 
+    def _get_delegations(self, address: str) -> List[Dict]:
+        """Get delegations for a delegator address."""
+        try:
+            resp = requests.get(f"{self.node_url}/delegator/{address}/delegations", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get('delegations', [])
+            return []
+        except Exception as e:
+            logger.debug(f"Failed to get delegations for {address}: {e}")
+            return []
+
+    def _get_validator_owner_keys(self) -> Dict[str, Dict[str, str]]:
+        """Map reward addresses to keystore keys for validators."""
+        owner_keys: Dict[str, Dict[str, str]] = {}
+        for key in self.keystore.list_keys():
+            if key.get("address"):
+                full_key = self.keystore.get_key(key["name"])
+                if full_key:
+                    owner_keys[full_key["address"]] = full_key
+        return owner_keys
+
     def _broadcast_tx(self, tx: Transaction) -> bool:
         """Broadcast transaction to node."""
         tx_hash = tx.hash()
@@ -350,6 +372,9 @@ class TxGenerator:
 
         Args:
             sender: Optional sender account. If None, picks random account.
+
+        Returns:
+            Transaction or None if insufficient balance for meaningful transfer.
         """
         if sender is None:
             sender = random.choice(self.test_accounts)
@@ -360,7 +385,7 @@ class TxGenerator:
         while recipient['address'] == sender['address']:
             recipient = random.choice(self.test_accounts)
 
-        # Check sender balance and use safe amount (resilient to low balance)
+        # Check sender balance and use safe amount
         fee = 21000000  # 21M fee for TRANSFER
         balance = self._get_balance(sender['address'])
         reserve = 1 * (10**DECIMALS)  # Keep 1 CPC reserve for future fees
@@ -368,13 +393,14 @@ class TxGenerator:
 
         # Use minimum of configured max and safe amount
         amount_max = min(self.config['amount_max'], max_safe_amount)
-        amount_min = min(self.config['amount_min'], amount_max)
+        amount_min = self.config['amount_min']
 
-        # If balance too low, use minimal amount
+        # Skip if balance too low for meaningful transfer
         if amount_max < amount_min:
-            amount = amount_min
-        else:
-            amount = random.randint(amount_min, amount_max)
+            logger.debug(f"Skipping TRANSFER: insufficient balance for sender {sender['address'][:16]}...")
+            return None
+
+        amount = random.randint(amount_min, amount_max)
 
         # Ethereum-style: get pending nonce directly from blockchain
         nonce = self._get_nonce(sender['address'])
@@ -406,6 +432,9 @@ class TxGenerator:
 
         Args:
             delegator: Optional delegator account. If None, picks random account.
+
+        Returns:
+            Transaction or None if insufficient balance for meaningful stake.
         """
         if delegator is None:
             delegator = random.choice(self.test_accounts)
@@ -419,41 +448,156 @@ class TxGenerator:
         validator = random.choice(validators)
 
         # Check delegator balance and use safe amount
-        fee = 50000000  # 50M fee for STAKE
+        fee = 50000000  # 50M fee for DELEGATE
         balance = self._get_balance(delegator['address'])
         reserve = 1 * (10**DECIMALS)  # Keep 1 CPC reserve
         max_safe_amount = max(0, balance - fee - reserve)
 
         # Use safe delegation amount
         amount_max = min(10000 * (10**DECIMALS), max_safe_amount)
-        amount_min = min(100 * (10**DECIMALS), amount_max)
+        amount_min = 100 * (10**DECIMALS)  # Minimum stake: 100 CPC
 
+        # Skip if balance too low for meaningful stake
         if amount_max < amount_min:
-            amount = amount_min
-        else:
-            amount = random.randint(amount_min, amount_max)
+            logger.debug(f"Skipping STAKE: insufficient balance for delegator {delegator['address'][:16]}...")
+            return None
+
+        amount = random.randint(amount_min, amount_max)
 
         # Ethereum-style: get pending nonce directly from blockchain
         # No client-side nonce management needed
         nonce = self._get_nonce(delegator['address'])
 
         tx = Transaction(
-            tx_type=TxType.STAKE,
+            tx_type=TxType.DELEGATE,
             from_address=delegator['address'],
-            to_address=validator['address'],
+            to_address=None,
             amount=amount,
-            fee=50000000,  # 50M fee for STAKE
+            fee=50000000,  # 50M fee for DELEGATE
             nonce=nonce,
             gas_price=1000,
             gas_limit=50000,
             pub_key=delegator['public_key'],
             signature="",
-            payload={"pub_key": validator['pq_pub_key']}  # Include validator's pub_key in payload
+            payload={"validator": validator['address']}
         )
 
         # Sign
         msg_hash = bytes.fromhex(tx.hash())
         private_key = bytes.fromhex(delegator['private_key'])
+        signature = sign(msg_hash, private_key)
+        tx.signature = signature.hex()
+
+        return tx
+
+    def generate_undelegate_tx(self, delegator=None) -> Transaction:
+        """
+        Generate UNDELEGATE transaction.
+
+        Args:
+            delegator: Optional delegator account. If None, picks random account.
+
+        Returns:
+            Transaction or None if no delegations found.
+        """
+        if delegator is None:
+            delegator = random.choice(self.test_accounts)
+
+        delegations = self._get_delegations(delegator['address'])
+        if not delegations:
+            logger.debug(f"No delegations found for {delegator['address'][:16]}...")
+            return None
+
+        delegation = random.choice(delegations)
+        delegated_amount = int(delegation.get("amount", 0))
+        if delegated_amount <= 0:
+            return None
+
+        fee = 50000000  # 50M fee for UNDELEGATE
+        balance = self._get_balance(delegator['address'])
+        if balance < fee:
+            logger.debug(f"Skipping UNDELEGATE: insufficient balance for fees for {delegator['address'][:16]}...")
+            return None
+
+        amount_min = min(100 * (10**DECIMALS), delegated_amount)
+        amount_max = delegated_amount
+        if amount_max < amount_min:
+            return None
+
+        amount = random.randint(amount_min, amount_max)
+        nonce = self._get_nonce(delegator['address'])
+
+        tx = Transaction(
+            tx_type=TxType.UNDELEGATE,
+            from_address=delegator['address'],
+            to_address=None,
+            amount=amount,
+            fee=fee,
+            nonce=nonce,
+            gas_price=1000,
+            gas_limit=50000,
+            pub_key=delegator['public_key'],
+            signature="",
+            payload={"validator": delegation["validator"]}
+        )
+
+        msg_hash = bytes.fromhex(tx.hash())
+        private_key = bytes.fromhex(delegator['private_key'])
+        signature = sign(msg_hash, private_key)
+        tx.signature = signature.hex()
+
+        return tx
+
+    def generate_update_validator_tx(self) -> Transaction:
+        """
+        Generate UPDATE_VALIDATOR transaction from a validator owner.
+        """
+        validators = self._get_validators()
+        if not validators:
+            logger.warning("No validators available for update")
+            return None
+
+        owner_keys = self._get_validator_owner_keys()
+        candidates = [v for v in validators if v.get("reward_address") in owner_keys]
+        if not candidates:
+            logger.debug("No validator owners in keystore for UPDATE_VALIDATOR")
+            return None
+
+        val = random.choice(candidates)
+        owner = owner_keys[val["reward_address"]]
+
+        fee = 50000000  # 50M fee for UPDATE_VALIDATOR
+        balance = self._get_balance(owner['address'])
+        if balance < fee:
+            logger.debug(f"Skipping UPDATE_VALIDATOR: insufficient balance for {owner['address'][:16]}...")
+            return None
+
+        nonce = self._get_nonce(owner['address'])
+        suffix = random.randint(1, 9999)
+        payload = {
+            "pub_key": val["pq_pub_key"],
+            "name": f"Validator-{suffix}",
+            "website": f"https://validator{suffix}.example.com",
+            "description": f"Autotest validator {suffix}",
+            "commission_rate": round(random.uniform(0.05, 0.20), 3),
+        }
+
+        tx = Transaction(
+            tx_type=TxType.UPDATE_VALIDATOR,
+            from_address=owner['address'],
+            to_address=None,
+            amount=0,
+            fee=fee,
+            nonce=nonce,
+            gas_price=1000,
+            gas_limit=50000,
+            pub_key=owner['public_key'],
+            signature="",
+            payload=payload
+        )
+
+        msg_hash = bytes.fromhex(tx.hash())
+        private_key = bytes.fromhex(owner['private_key'])
         signature = sign(msg_hash, private_key)
         tx.signature = signature.hex()
 
@@ -479,10 +623,19 @@ class TxGenerator:
         """
         rand = random.random()
 
-        if rand < self.config['send_ratio']:
+        send_ratio = self.config.get('send_ratio', 0)
+        delegate_ratio = self.config.get('delegate_ratio', 0)
+        undelegate_ratio = self.config.get('undelegate_ratio', 0)
+        update_validator_ratio = self.config.get('update_validator_ratio', 0)
+
+        if rand < send_ratio:
             return self.generate_send_tx(sender=sender)
-        elif rand < self.config['send_ratio'] + self.config['delegate_ratio']:
+        elif rand < send_ratio + delegate_ratio:
             return self.generate_delegate_tx(delegator=sender)
+        elif rand < send_ratio + delegate_ratio + undelegate_ratio:
+            return self.generate_undelegate_tx(delegator=sender)
+        elif rand < send_ratio + delegate_ratio + undelegate_ratio + update_validator_ratio:
+            return self.generate_update_validator_tx()
         else:
             # For now, default to SEND
             return self.generate_send_tx(sender=sender)

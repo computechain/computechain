@@ -74,21 +74,27 @@ class BlockProposer:
         last_ts = self.chain.last_block_timestamp
         now = int(time.time())
         block_time = self.chain.config.block_time_sec
-        
-        if now <= last_ts:
-            # Clock skew or just produced? Wait.
-            return
 
-        time_since_last = now - last_ts
-        
-        # If less than 1 block time, we are waiting for the first slot (Round 0) to open
-        if time_since_last < block_time:
-            return
+        # Special case for genesis block (height -1 -> 0)
+        # When there are no blocks, use round 0 immediately
+        if self.chain.height == -1:
+            round = 0
+            time_since_last = 0
+        else:
+            if now <= last_ts:
+                # Clock skew or just produced? Wait.
+                return
 
-        # Calculate round
-        # Round 0 starts at last_ts + block_time
-        # Round 1 starts at last_ts + 2*block_time
-        round = int((time_since_last - block_time) // block_time)
+            time_since_last = now - last_ts
+
+            # If less than 1 block time, we are waiting for the first slot (Round 0) to open
+            if time_since_last < block_time:
+                return
+
+            # Calculate round
+            # Round 0 starts at last_ts + block_time
+            # Round 1 starts at last_ts + 2*block_time
+            round = int((time_since_last - block_time) // block_time)
         
         next_height = self.chain.height + 1
         
@@ -135,7 +141,7 @@ class BlockProposer:
                 break
 
             try:
-                tmp_state.apply_transaction(tx, skip_crypto_check=True)
+                tmp_state.apply_transaction(tx, current_height=height, skip_crypto_check=True)
                 valid_txs.append(tx)
                 cumulative_gas += tx_gas
             except Exception as e:
@@ -211,6 +217,11 @@ class BlockProposer:
 
         # 8. Add to local chain
         # Note: This will re-verify/re-apply but it's safer and ensures consistency
+        # Race condition check: verify height hasn't changed while we were preparing
+        if self.chain.height + 1 != height:
+            logger.debug(f"Block race lost: expected height {height}, chain now at {self.chain.height + 1}")
+            return  # Another block arrived via P2P, abort gracefully
+
         if self.chain.add_block(block):
             # Remove transactions from mempool
             self.mempool.remove_transactions(txs)

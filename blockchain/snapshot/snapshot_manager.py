@@ -300,3 +300,12 @@ class SnapshotManager:
     def _get_metadata_path(self, height: int) -> Path:
         """Get path to metadata file."""
         return self.snapshots_dir / f"snapshot_{height}_meta.json"
+
+    def save_snapshot_bytes(self, height: int, data: bytes) -> Path:
+        """
+        Save raw snapshot bytes (gzip-compressed JSON) to disk.
+        """
+        snapshot_path = self._get_snapshot_path(height)
+        with open(snapshot_path, "wb") as f:
+            f.write(data)
+        return snapshot_path

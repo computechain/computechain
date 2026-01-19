@@ -291,6 +291,12 @@ class Mempool:
                 account = state.get_account(tx.from_address)
                 expected_nonce = account.nonce
 
+                # Reject TRANSFER with amount=0 (meaningless transaction)
+                from ...protocol.types.tx import TxType
+                if tx.tx_type == TxType.TRANSFER and tx.amount == 0:
+                    logger.warning(f"Reject tx {tx_hash[:8]}: TRANSFER with amount=0 is not allowed")
+                    return False, "transfer_amount_zero"
+
                 # Check balance early (Ethereum-style validation)
                 # Calculate total cost: amount + fee
                 total_cost = tx.amount + tx.fee

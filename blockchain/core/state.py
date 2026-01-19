@@ -124,7 +124,17 @@ class AccountState:
             skip_crypto_check: If True, skip signature verification (assumes already validated by mempool)
         """
 
-        # 0. Crypto Verification
+        # 0. Basic Sanity Checks
+        if tx.amount < 0:
+            raise ValueError("amount must be non-negative")
+        if tx.fee < 0:
+            raise ValueError("fee must be non-negative")
+        if tx.gas_price < 0:
+            raise ValueError("gas_price must be non-negative")
+        if tx.gas_limit < 0:
+            raise ValueError("gas_limit must be non-negative")
+
+        # 1. Crypto Verification
         if not skip_crypto_check:
             if not tx.signature or not tx.pub_key:
                  raise ValueError("Missing signature or pub_key")
@@ -152,11 +162,11 @@ class AccountState:
 
         sender = self.get_account(tx.from_address)
         
-        # 1. Nonce check
+        # 2. Nonce check
         if tx.nonce != sender.nonce:
             raise ValueError(f"Invalid nonce: expected {sender.nonce}, got {tx.nonce}")
         
-        # 2. Gas & Fee Calculation (New Logic)
+        # 3. Gas & Fee Calculation (New Logic)
         base_gas = GAS_PER_TYPE.get(tx.tx_type, 0)
         
         if tx.gas_limit < base_gas:
@@ -186,12 +196,12 @@ class AccountState:
         if sender.balance < total_cost:
             raise ValueError(f"Insufficient balance: have {sender.balance}, need {total_cost}")
 
-        # 3. Update sender
+        # 4. Update sender
         sender.balance -= total_cost
         sender.nonce += 1
         self.set_account(sender)
         
-        # 4. Route by Type
+        # 5. Route by Type
         if tx.tx_type == TxType.TRANSFER:
             if not tx.to_address:
                 raise ValueError("Transfer must have to_address")
@@ -291,6 +301,8 @@ class AccountState:
             self.set_account(sender)
 
             # Penalty is burned (not returned to anyone)
+            if penalty_amount > 0:
+                self.burn_tokens(penalty_amount, reason="unstake_penalty")
 
         elif tx.tx_type == TxType.SUBMIT_RESULT:
              # S4.3: Validate PoC Result structure
@@ -509,8 +521,10 @@ class AccountState:
             self.set_validator(val)
 
             # Unjail fee is burned (already deducted from balance)
+            if tx.amount > 0:
+                self.burn_tokens(tx.amount, reason="unjail_fee")
 
-        # 5. Handle Fees - implicitly burned or collected by block proposer later
+        # 6. Handle Fees - implicitly burned or collected by block proposer later
         return True
 
     def process_unbonding_queue(self, current_height: int):
@@ -567,37 +581,109 @@ class AccountState:
                 # Account already in cache, will be persisted later
 
     def compute_state_root(self) -> str:
-        """Computes Merkle root of the entire account state."""
-        # 1. Load ALL accounts from DB (expensive but necessary for MVP correctness)
+        """
+        Computes Merkle root of the entire state (accounts + validators).
+
+        This ensures all nodes have consensus on:
+        - Account balances and nonces
+        - Validator set (power, active status, jail status)
+
+        If any node has different validator state, the block will be rejected.
+        """
+        items = []
+
+        # ═══════════════════════════════════════════════════════════════════
+        # 1. ACCOUNTS - Load all accounts and build leaves
+        # ═══════════════════════════════════════════════════════════════════
         all_db_data = self.db.get_state_by_prefix("acc:")
-        
-        final_state: Dict[str, Account] = {}
-        
+
+        final_accounts: Dict[str, Account] = {}
+
         # Parse DB state
         for k, v in all_db_data.items():
             addr = k.split(":")[1]
-            final_state[addr] = Account.model_validate_json(v)
-            
-        # 2. Overlay local cache (latest changes)
+            final_accounts[addr] = Account.model_validate_json(v)
+
+        # Overlay local cache (latest changes)
         for addr, acc in self._accounts.items():
-            final_state[addr] = acc
-            
-        # 3. Sort and build leaves
-        items = []
-        for addr in sorted(final_state.keys()):
-            acc = final_state[addr]
-            # Leaf data: address + balance + nonce
+            final_accounts[addr] = acc
+
+        # Build account leaves (sorted for determinism)
+        for addr in sorted(final_accounts.keys()):
+            acc = final_accounts[addr]
+            account_payload = {
+                "address": addr,
+                "balance": acc.balance,
+                "nonce": acc.nonce,
+                "reward_history": acc.reward_history,
+                "unbonding_delegations": [
+                    e.model_dump() for e in sorted(
+                        acc.unbonding_delegations,
+                        key=lambda e: (e.completion_height, e.validator, e.amount),
+                    )
+                ],
+            }
             leaf_data = (
-                addr
-                + str(acc.balance)
-                + str(acc.nonce)
+                "acc:"
+                + json.dumps(
+                    account_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                )
             ).encode("utf-8")
             items.append(sha256(leaf_data))
-            
+
+        # ═══════════════════════════════════════════════════════════════════
+        # 2. VALIDATORS - Load all validators and build leaves
+        # ═══════════════════════════════════════════════════════════════════
+        all_validators = self.get_all_validators()
+
+        # Build validator leaves (sorted for determinism)
+        for val in sorted(all_validators, key=lambda v: v.address):
+            validator_payload = {
+                "address": val.address,
+                "pq_pub_key": val.pq_pub_key,
+                "power": val.power,
+                "is_active": val.is_active,
+                "reward_address": val.reward_address,
+                "name": val.name,
+                "website": val.website,
+                "description": val.description,
+                "commission_rate": val.commission_rate,
+                "self_stake": val.self_stake,
+                "total_delegated": val.total_delegated,
+                "delegations": [
+                    d.model_dump() for d in sorted(
+                        val.delegations,
+                        key=lambda d: (d.delegator, d.validator, d.created_height, d.amount),
+                    )
+                ],
+                "jailed_until_height": val.jailed_until_height,
+                "jail_count": val.jail_count,
+                "joined_height": val.joined_height,
+                "unstaking_queue": [
+                    e.model_dump() for e in sorted(
+                        val.unstaking_queue,
+                        key=lambda e: (e.completion_height, e.beneficiary, e.amount),
+                    )
+                ],
+            }
+            leaf_data = (
+                "val:"
+                + json.dumps(
+                    validator_payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                )
+            ).encode("utf-8")
+            items.append(sha256(leaf_data))
+
         if not items:
             return sha256(b"").hex()
-            
-        # 4. Compute Merkle Root
+
+        # 3. Compute Merkle Root
         return self._compute_merkle_root_from_leaves(items).hex()
 
     def _compute_merkle_root_from_leaves(self, leaves: List[bytes]) -> bytes:

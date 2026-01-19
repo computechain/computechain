@@ -56,44 +56,89 @@ if pgrep -f "run_node.py" > /dev/null; then
 fi
 
 if [ -z "$SKIP_INIT" ]; then
-    # Initialize validators
-    echo "Initializing 5 validators..."
+    # ===========================================
+    # SHARED GENESIS MULTI-VALIDATOR SETUP
+    # ===========================================
+    # All validators share the same genesis.json
+    # This ensures proper P2P consensus
+    # ===========================================
+
+    # Step 1: Clean previous test data
+    echo "Cleaning previous test data..."
+    rm -rf data/.validator_* data/shared_genesis.json data/keys
+
+    # Step 2: Generate shared genesis with all 5 validators
+    echo ""
+    echo "Generating shared genesis with 5 validators..."
+    python3 scripts/generate_genesis.py \
+        --validators 5 \
+        --genesis-output data/shared_genesis.json \
+        --keys-dir data/keys \
+        --stake 10000
+
+    if [ ! -f "data/shared_genesis.json" ]; then
+        echo "Error: Failed to generate shared genesis!"
+        exit 1
+    fi
+
+    # Step 3: Initialize all validators with shared genesis
+    echo ""
+    echo "Initializing validators with shared genesis..."
     for i in {1..5}; do
-        if [ ! -d "data/.validator_$i" ]; then
-            echo "  Initializing validator_$i..."
-            ./run_node.py --datadir data/.validator_$i init > /dev/null 2>&1
-        else
-            echo "  validator_$i already initialized"
+        echo "  Initializing validator_$i..."
+        ./run_node.py --datadir data/.validator_$i init \
+            --genesis data/shared_genesis.json \
+            --validator-key data/keys/validator_$i.hex \
+            --faucet-key data/keys/faucet.hex \
+            > /dev/null 2>&1
+
+        if [ ! -f "data/.validator_$i/genesis.json" ]; then
+            echo "Error: Failed to initialize validator_$i!"
+            exit 1
         fi
     done
 
+    # Step 4: Import keys to CLI keystore for later use
+    echo ""
+    echo "Importing keys to CLI keystore..."
+    KEYS_DIR="$HOME/.computechain/keys"
+    mkdir -p "$KEYS_DIR"
+
+    for i in {1..5}; do
+        KEY_NAME="validator_$i"
+        PRIV_KEY=$(cat "data/keys/validator_$i.hex")
+        ./cpc-cli keys import --private-key "$PRIV_KEY" "$KEY_NAME" > /dev/null 2>&1 || true
+    done
+
+    # Import faucet key
+    FAUCET_PRIV=$(cat "data/keys/faucet.hex")
+    ./cpc-cli keys import --private-key "$FAUCET_PRIV" "faucet" > /dev/null 2>&1 || true
+    echo "  Keys imported to $KEYS_DIR"
+
+    # Step 5: Start validators
     echo ""
     echo "Starting validators..."
 
-    # Start validator 1
-    ./run_node.py --datadir data/.validator_1 run --port 8000 --p2p-port 26656 > logs/validator_1.log 2>&1 &
+    # Start validator 1 (bootstrap node - no peers)
+    ./run_node.py --datadir data/.validator_1 run \
+        --port 8000 --p2p-host 127.0.0.1 --p2p-port 26656 \
+        > logs/validator_1.log 2>&1 &
     echo "  validator_1 started (PID: $!) - http://localhost:8000"
-    sleep 3
+    sleep 2
 
-    # Start validator 2
-    ./run_node.py --datadir data/.validator_2 run --port 8001 --p2p-port 26657 > logs/validator_2.log 2>&1 &
-    echo "  validator_2 started (PID: $!) - http://localhost:8001"
-    sleep 3
+    # Start validators 2-5 with validator_1 as peer
+    for i in {2..5}; do
+        RPC_PORT=$((8000 + i - 1))
+        P2P_PORT=$((26656 + i - 1))
+        ./run_node.py --datadir data/.validator_$i run \
+            --port $RPC_PORT --p2p-host 127.0.0.1 --p2p-port $P2P_PORT \
+            --peers "127.0.0.1:26656" \
+            > logs/validator_$i.log 2>&1 &
+        echo "  validator_$i started (PID: $!) - http://localhost:$RPC_PORT"
+        sleep 1
+    done
 
-    # Start validator 3
-    ./run_node.py --datadir data/.validator_3 run --port 8002 --p2p-port 26658 > logs/validator_3.log 2>&1 &
-    echo "  validator_3 started (PID: $!) - http://localhost:8002"
     sleep 3
-
-    # Start validator 4
-    ./run_node.py --datadir data/.validator_4 run --port 8003 --p2p-port 26659 > logs/validator_4.log 2>&1 &
-    echo "  validator_4 started (PID: $!) - http://localhost:8003"
-    sleep 3
-
-    # Start validator 5
-    ./run_node.py --datadir data/.validator_5 run --port 8004 --p2p-port 26660 > logs/validator_5.log 2>&1 &
-    echo "  validator_5 started (PID: $!) - http://localhost:8004"
-    sleep 5
 
     # Verify validators are running
     echo ""
@@ -104,7 +149,7 @@ if [ -z "$SKIP_INIT" ]; then
         echo "Check logs/validator_*.log for errors"
         exit 1
     fi
-    echo "  ✓ All 5 validators running"
+    echo "  All 5 validators running"
 fi
 
 # Wait for blockchain to sync
@@ -121,6 +166,20 @@ if [ "$HEIGHT" = "0" ]; then
 fi
 
 echo "  Current blockchain height: $HEIGHT"
+
+# ============================================
+# Verify validators are in shared genesis
+# ============================================
+echo ""
+echo "Checking validators in genesis..."
+VALIDATOR_COUNT=$(curl -s http://localhost:8000/validators 2>/dev/null | python3 -c "import sys, json; data=json.load(sys.stdin); print(len([v for v in data.get('validators', []) if v.get('is_active')]))" 2>/dev/null || echo "0")
+echo "  Active validators from genesis: $VALIDATOR_COUNT"
+
+if [ "$VALIDATOR_COUNT" -ne 5 ]; then
+    echo ""
+    echo "Warning: Expected 5 active validators in genesis, got $VALIDATOR_COUNT"
+    echo "Check data/shared_genesis.json for validator configuration"
+fi
 
 # Check if tx_generator is already running
 if pgrep -f "tx_generator.py" > /dev/null; then
