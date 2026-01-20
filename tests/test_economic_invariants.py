@@ -13,6 +13,8 @@ Tests that economic invariants hold under various scenarios:
 import pytest
 import os
 import shutil
+import json
+import time
 from blockchain.core.chain import Blockchain
 from blockchain.core.state import AccountState
 from protocol.types.tx import Transaction, TxType
@@ -24,16 +26,21 @@ from protocol.config.params import CURRENT_NETWORK, DECIMALS
 @pytest.fixture
 def chain():
     """Create a test blockchain."""
-    db_path = "./test_invariants_db"
-    if os.path.exists(db_path):
-        shutil.rmtree(db_path)
+    db_dir = "./test_invariants_db"
+    if os.path.exists(db_dir):
+        shutil.rmtree(db_dir)
+    os.makedirs(db_dir, exist_ok=True)
 
+    with open(os.path.join(db_dir, "genesis.json"), "w") as f:
+        json.dump({"alloc": {}, "validators": [], "genesis_time": int(time.time()) - 100}, f)
+
+    db_path = os.path.join(db_dir, "chain.db")
     blockchain = Blockchain(db_path=db_path)
     yield blockchain
 
     # Cleanup
-    if os.path.exists(db_path):
-        shutil.rmtree(db_path)
+    if os.path.exists(db_dir):
+        shutil.rmtree(db_dir)
 
 
 def test_supply_conservation(chain):

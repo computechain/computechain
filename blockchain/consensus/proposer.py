@@ -67,37 +67,29 @@ class BlockProposer:
     def _try_produce_block_step(self):
         # Check Sync State
         if self.p2p_node and self.p2p_node.sync_state == SyncState.SYNCING:
-            # Do not produce blocks while syncing
-            return
+            best_height = self.p2p_node.get_best_peer_height()
+            if best_height > self.chain.height + 1:
+                # Do not produce blocks while significantly behind
+                return
 
-        # 0. Determine Round Logic
-        last_ts = self.chain.last_block_timestamp
+        # 0. Determine Round Logic (slot-based, deterministic)
         now = int(time.time())
         block_time = self.chain.config.block_time_sec
-
-        # Special case for genesis block (height -1 -> 0)
-        # When there are no blocks, use round 0 immediately
-        if self.chain.height == -1:
-            round = 0
-            time_since_last = 0
-        else:
-            if now <= last_ts:
-                # Clock skew or just produced? Wait.
-                return
-
-            time_since_last = now - last_ts
-
-            # If less than 1 block time, we are waiting for the first slot (Round 0) to open
-            if time_since_last < block_time:
-                return
-
-            # Calculate round
-            # Round 0 starts at last_ts + block_time
-            # Round 1 starts at last_ts + 2*block_time
-            round = int((time_since_last - block_time) // block_time)
-        
         next_height = self.chain.height + 1
-        
+
+        slot_time = self.chain.genesis_time + (next_height * block_time)
+        if now < slot_time:
+            return
+
+        round = int((now - slot_time) // block_time)
+        time_since_last = now - self.chain.last_block_timestamp if self.chain.last_block_timestamp else 0
+        if round > self.chain.config.max_rounds_per_height:
+            logger.warning(
+                f"Round {round} exceeds max_rounds_per_height={self.chain.config.max_rounds_per_height} "
+                f"at height {next_height}; clamping"
+            )
+            round = self.chain.config.max_rounds_per_height
+
         # Check who is proposer for this (height, round)
         expected_proposer = self.chain.consensus.get_proposer(next_height, round)
         
@@ -123,7 +115,7 @@ class BlockProposer:
         # 2. Prepare Header info
         height = next_height
         prev_hash = self.chain.last_hash
-        timestamp = now
+        timestamp = slot_time + (round * block_time)
         
         # 3. Execute to get State Root (Simulate)
         # Create temp state to validate txs and calc state root
@@ -194,6 +186,7 @@ class BlockProposer:
             timestamp=timestamp,
             chain_id=self.chain.config.chain_id,
             proposer_address=self.address,
+            round=round,
             tx_root=tx_root,
             state_root=state_root,
             compute_root=compute_root,

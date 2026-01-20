@@ -12,6 +12,7 @@ import pytest
 import time
 import os
 import shutil
+import json
 from unittest.mock import Mock, patch
 
 from computechain.blockchain.core.events import EventBus, event_bus
@@ -51,6 +52,10 @@ def clean_chain():
     if os.path.exists(TEST_DB_DIR):
         shutil.rmtree(TEST_DB_DIR)
     os.makedirs(TEST_DB_DIR)
+
+    genesis_path = os.path.join(TEST_DB_DIR, "genesis.json")
+    with open(genesis_path, "w") as f:
+        json.dump({"alloc": {}, "validators": [], "genesis_time": int(time.time()) - 100}, f)
 
     db_path = os.path.join(TEST_DB_DIR, "chain.db")
     chain = Blockchain(db_path)

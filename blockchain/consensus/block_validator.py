@@ -30,11 +30,16 @@ class BlockValidator:
             if header.height == 0 and header.prev_hash != "0"*64:
                  raise ValueError("Genesis block must have 0-prev_hash")
 
-        # 2. Timestamp Check
-        # Allow some drift? For MVP strict monotonic is fine.
-        now = int(time.time())
-        if header.timestamp > now + 5: # 5 sec future drift
-             raise ValueError(f"Block timestamp in future: {header.timestamp}")
+        # 2. Timestamp Check (slot-based)
+        genesis_time = self.chain.genesis_time
+        if genesis_time <= 0:
+            raise ValueError("Missing genesis_time for slot validation")
+        round = getattr(header, "round", 0)
+        if round < 0:
+            raise ValueError("Invalid round value")
+        expected_ts = genesis_time + (header.height * self.config.block_time_sec) + (round * self.config.block_time_sec)
+        if header.timestamp != expected_ts:
+            raise ValueError(f"Invalid timestamp for slot: expected {expected_ts}, got {header.timestamp}")
         
         # 3. Proposer Signature Check
         # We have block.pq_signature and header.hash().

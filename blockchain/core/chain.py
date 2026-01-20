@@ -53,9 +53,11 @@ class Blockchain:
             self.snapshot_manager = None
 
         self.last_block_timestamp = 0
+        self.genesis_time = 0
         self._load_chain_state()
 
     def _load_chain_state(self):
+        self._load_genesis_time()
         last = self.db.get_last_block()
         if last:
             self.height, self.last_hash, _ = last
@@ -73,6 +75,28 @@ class Blockchain:
             logger.info("Chain initialized empty (waiting for genesis)")
             self._apply_genesis_allocation()
             self._apply_genesis_validators()
+        if self.genesis_time == 0:
+            raise RuntimeError("genesis_time must be defined in genesis.json and consistent across all nodes")
+
+    def _load_genesis_time(self):
+        self.genesis_time = 0
+        try:
+            stored = self.db.get_state("meta:genesis_time")
+            if stored:
+                self.genesis_time = int(stored)
+                return
+        except Exception:
+            pass
+        if not os.path.exists(self.genesis_path):
+            return
+        try:
+            with open(self.genesis_path, "r") as f:
+                data = json.load(f)
+            self.genesis_time = int(data.get("genesis_time", 0) or 0)
+            if self.genesis_time:
+                self.db.set_state("meta:genesis_time", str(self.genesis_time))
+        except Exception as e:
+            logger.warning(f"Failed to load genesis_time: {e}")
 
     def load_from_snapshot(self, snapshot_height: int) -> bool:
         """
@@ -333,44 +357,28 @@ class Blockchain:
              raise ValueError(f"Invalid prev_hash: expected {self.last_hash[:8]}, got {block.header.prev_hash[:8]}")
 
         # 2. Consensus Validation (Proposer Check with Round Logic)
-        # Calculate round based on timestamp
-        last_ts = self.last_block_timestamp
         current_ts = block.header.timestamp
         block_time = self.config.block_time_sec
         
-        if current_ts <= last_ts:
-             # Unless it's genesis or very fast local test? No, blocks must move forward in time.
-             # Allow equality only if it's the very first block? No.
-             if self.height >= 0:
-                 # Relax check for devnet reorgs? No, timestamps must increase.
-                 raise ValueError(f"Invalid timestamp: must be > {last_ts}")
-        
-        # P1.3: Future Drift Check
-        # Allow up to 15 seconds drift
-        if current_ts > time.time() + 15:
-             raise ValueError(f"Block timestamp too far in future: {current_ts} > now+15s")
-        
-        # Round 0: (current - last) <= block_time (roughly)
-        # Actually: 
-        # Expected TS for Round 0 = last_ts + block_time
-        # Expected TS for Round 1 = last_ts + 2*block_time
-        
-        # We can infer round:
-        if self.height == -1:
-            # Genesis / First block
-            round = 0
-        else:
-            diff = current_ts - last_ts
-            if diff < block_time:
-                 # Too early? For devnet we might accept, but strictly speaking:
-                 # raise ValueError("Block timestamp too early")
-                 round = 0
-            else:
-                 round = int((diff - block_time) // block_time)
+        # Use declared round from header for deterministic round-robin
+        round = getattr(block.header, "round", 0)
+        if round < 0:
+            raise ValueError("Invalid round value")
+        if round > self.config.max_rounds_per_height:
+            raise ValueError(f"Round exceeds max_rounds_per_height: {round}")
+
+        expected_slot_time = self.genesis_time + (block.header.height * block_time)
+        expected_ts = expected_slot_time + (round * block_time)
+        if current_ts != expected_ts:
+            raise ValueError(f"Invalid timestamp for slot: expected {expected_ts}, got {current_ts}")
 
         expected_proposer = self.consensus.get_proposer(block.header.height, round)
         
         if expected_proposer:
+            logger.debug(
+                f"Proposer check: height={block.header.height} round={round} "
+                f"expected={expected_proposer.address[:12]} actual={block.header.proposer_address[:12]}"
+            )
             if block.header.proposer_address != expected_proposer.address:
                  # Try next round? Maybe the node thought it was round N, but network thinks N+1?
                  # Strict check:
@@ -850,7 +858,7 @@ class Blockchain:
         # 6. Apply penalties & jail for those who violated rules
         for v in all_vals:
             # Check for jail condition (missed too many blocks)
-            if v.missed_blocks >= self.config.max_missed_blocks_sequential and v.is_active:
+            if v.missed_blocks >= (self.config.max_missed_blocks_sequential * 5) and v.is_active:
                 self._jail_validator(v, state, current_height)
                 continue  # Skip further processing for this validator
 
@@ -897,37 +905,47 @@ class Blockchain:
             proposer_val.missed_blocks = 0  # Reset consecutive misses
             self.state.set_validator(proposer_val)
             logger.debug(f"Validator {proposer_addr[:12]} proposed block {block.header.height}")
+        self._track_expected_blocks(block)
+
+    def _track_expected_blocks(self, block: Block):
+        expected_proposer = self.consensus.get_proposer(block.header.height, round=0)
+        if not expected_proposer:
+            return
+        val = self.state.get_validator(expected_proposer.address)
+        if val and val.is_active:
+            val.blocks_expected += 1
+            self.state.set_validator(val)
 
     def _track_missed_blocks(self, block: Block):
         """
-        Checks if there were missed blocks between last_block and current block
-        based on timestamps. Increments missed_blocks for validators who should
-        have proposed but didn't.
+        Increments missed_blocks for validators who missed their round slots
+        at the same height (round 0..round-1).
         """
         if self.height < 0:
             return  # Genesis block
 
-        time_diff = block.header.timestamp - self.last_block_timestamp
-        block_time = self.config.block_time_sec
+        round = getattr(block.header, "round", 0)
+        if round <= 0:
+            return
 
-        # Calculate how many blocks should have been created
-        expected_blocks = time_diff // block_time
-
-        if expected_blocks > 1:
-            # There were missed blocks!
-            missed_count = int(expected_blocks - 1)
-            logger.warning(f"Detected {missed_count} missed blocks (time gap: {time_diff}s)")
-
-            for i in range(1, missed_count + 1):
-                missed_height = self.height + i
-                expected_proposer = self.consensus.get_proposer(missed_height, round=0)
-
-                if expected_proposer:
-                    val = self.state.get_validator(expected_proposer.address)
-                    if val and val.is_active:
-                        val.missed_blocks += 1
-                        logger.warning(f"⚠️  Validator {val.address[:12]} missed block at height {missed_height} (total consecutive: {val.missed_blocks})")
-                        self.state.set_validator(val)
+        max_rounds = min(round, self.config.max_rounds_per_height)
+        for missed_round in range(max_rounds):
+            expected_proposer = self.consensus.get_proposer(block.header.height, round=missed_round)
+            if expected_proposer:
+                if expected_proposer.address == block.header.proposer_address:
+                    continue
+                val = self.state.get_validator(expected_proposer.address)
+                if val and val.is_active:
+                    if val.last_seen_height < block.header.height - 1:
+                        continue
+                    if val.last_seen_height < block.header.height - self.config.max_validators:
+                        continue
+                    val.missed_blocks += 1
+                    logger.warning(
+                        f"⚠️  Validator {val.address[:12]} missed slot at height {block.header.height} "
+                        f"round {missed_round} (total consecutive: {val.missed_blocks})"
+                    )
+                    self.state.set_validator(val)
 
     def _calculate_performance_score(self, val: Validator, state: AccountState) -> float:
         """
@@ -1016,7 +1034,6 @@ class Blockchain:
         """
         all_vals = state.get_all_validators()
         active_vals = [v for v in all_vals if v.is_active]
-        blocks_per_epoch = self.config.epoch_length_blocks
 
         # Reset stats for ALL validators first (allows inactive ones to rejoin)
         for v in all_vals:
@@ -1031,15 +1048,12 @@ class Blockchain:
         if not active_vals:
             return
 
-        # In Round-Robin, each validator should create roughly equal blocks
-        expected_per_val = blocks_per_epoch // len(active_vals)
-        remainder = blocks_per_epoch % len(active_vals)
-
-        for i, v in enumerate(sorted(active_vals, key=lambda x: x.address)):
-            v.blocks_expected = expected_per_val + (1 if i < remainder else 0)
-            v.blocks_proposed = 0  # Reset for new epoch
+        # Reset expected/proposed for active validators; expected is counted per-slot during block processing
+        for v in active_vals:
+            v.blocks_expected = 0
+            v.blocks_proposed = 0
             state.set_validator(v)
-            logger.debug(f"Epoch tracking: {v.address[:12]} expected to propose {v.blocks_expected} blocks")
+            logger.debug(f"Epoch tracking: {v.address[:12]} expected to propose 0 blocks (slot-based)")
 
     def _rollback_last_block_impl(self):
         """

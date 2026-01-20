@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import shutil
+import json
 from pathlib import Path
 
 # Add project root to path
@@ -31,6 +32,8 @@ def setup_chain():
     """Initialize test blockchain."""
     cleanup()
     os.makedirs(TEST_DB, exist_ok=True)
+    with open(os.path.join(TEST_DB, "genesis.json"), "w") as f:
+        json.dump({"alloc": {}, "validators": [], "genesis_time": int(time.time()) - 100}, f)
     db_path = os.path.join(TEST_DB, "chain.db")
     return Blockchain(db_path)
 

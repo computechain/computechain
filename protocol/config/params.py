@@ -37,6 +37,7 @@ class NetworkConfig:
                  epoch_length_blocks: int = 10,
                  min_validator_stake: int = 1000,
                  max_validators: int = 5,
+                 max_rounds_per_height: int = 0,
                  # Validator performance params (Phase 0)
                  min_uptime_score: float = 0.75,
                  max_missed_blocks_sequential: int = 10,
@@ -69,6 +70,7 @@ class NetworkConfig:
         self.epoch_length_blocks = epoch_length_blocks
         self.min_validator_stake = min_validator_stake
         self.max_validators = max_validators
+        self.max_rounds_per_height = max_rounds_per_height or (max_validators * 2)
         # Performance params
         self.min_uptime_score = min_uptime_score
         self.max_missed_blocks_sequential = max_missed_blocks_sequential
@@ -97,7 +99,8 @@ NETWORKS: Dict[str, NetworkConfig] = {
         epoch_length_blocks=100,              # Was 10, now 100 (20 blocks per validator with 5 vals)
         min_validator_stake=1000,
         max_validators=5,
-        min_uptime_score=0.5,                 # Was 0.75, now 0.5 (can miss half blocks)
+        max_rounds_per_height=10,
+        min_uptime_score=0.0,                 # Disabled for testing - no validator removal by uptime
         max_missed_blocks_sequential=20,      # Was 10, now 20 (more tolerance before jail)
         # Deterministic Faucet Key for Devnet
         faucet_priv_key="4f3edf982522b4e51b7e8b5f2f9c4d1d7a9e5f8c2b6d4e1a3c5b7d9e0f1a2b3c"
@@ -112,7 +115,8 @@ NETWORKS: Dict[str, NetworkConfig] = {
         genesis_premine=100_000_000 * 10**18,
         epoch_length_blocks=100,
         min_validator_stake=100_000 * 10**18,
-        max_validators=21
+        max_validators=21,
+        max_rounds_per_height=42
     ),
     "mainnet": NetworkConfig(
         network_id="mainnet",
@@ -124,7 +128,8 @@ NETWORKS: Dict[str, NetworkConfig] = {
         genesis_premine=0,
         epoch_length_blocks=72, # ~1 hour approx if block time 60s? No, 72*60 = 72 mins.
         min_validator_stake=100_000 * 10**18,
-        max_validators=100
+        max_validators=100,
+        max_rounds_per_height=200
     )
 }
 

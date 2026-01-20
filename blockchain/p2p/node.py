@@ -823,6 +823,12 @@ class P2PNode:
         peers.sort(key=lambda p: (p.best_height, p.last_seen_at), reverse=True)
         return peers[0]
 
+    def get_best_peer_height(self) -> int:
+        peers = list(self.active_peers.values())
+        if not peers:
+            return -1
+        return max(p.best_height for p in peers)
+
     async def _apply_cached_blocks(self):
         if not self._block_cache or not self.on_new_block:
             self._block_cache.clear()

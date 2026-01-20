@@ -17,6 +17,7 @@ import argparse
 import os
 import sys
 import json
+import time
 
 # Add parent to path for imports
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -104,11 +105,13 @@ def generate_genesis(
         faucet_balance = CURRENT_NETWORK.genesis_premine
 
     # Create genesis
+    genesis_time = int(time.time())
     genesis_data = {
         "alloc": {
             faucet_addr: faucet_balance
         },
-        "validators": validators
+        "validators": validators,
+        "genesis_time": genesis_time
     }
 
     # Write genesis

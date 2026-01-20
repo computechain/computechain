@@ -9,6 +9,7 @@ class BlockHeader(BaseModel):
     timestamp: int              # unix time
     chain_id: str               # "computechain-1"
     proposer_address: str       # validator address (cpcvalcons1...)
+    round: int = 0              # round-robin slot (0 = in-turn, 1+ = fallback rounds)
     
     tx_root: str                # Merkle root of all txs
     state_root: str             # Merkle root of state (accounts)
@@ -30,6 +31,7 @@ class BlockHeader(BaseModel):
             + str(self.timestamp)
             + self.chain_id
             + self.proposer_address
+            + str(self.round)
             + self.tx_root
             + self.state_root
             + self.compute_root

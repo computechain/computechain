@@ -2,6 +2,7 @@ import pytest
 import os
 import shutil
 import time
+import json
 from computechain.blockchain.core.chain import Blockchain
 from computechain.blockchain.core.state import AccountState
 from computechain.protocol.types.tx import Transaction, TxType
@@ -16,6 +17,9 @@ def clean_chain():
         shutil.rmtree(TEST_DB_DIR)
     os.makedirs(TEST_DB_DIR)
     
+    with open(os.path.join(TEST_DB_DIR, "genesis.json"), "w") as f:
+        json.dump({"alloc": {}, "validators": [], "genesis_time": int(time.time()) - 100}, f)
+
     db_path = os.path.join(TEST_DB_DIR, "chain.db")
     chain = Blockchain(db_path)
     yield chain
@@ -1057,4 +1061,3 @@ def test_min_uptime_score_filter(clean_chain):
     # Check that val2 with low uptime was filtered during candidate selection
     # The uptime_score check happens before performance calculation
     assert val2_after.uptime_score < 0.75  # Val2 had low uptime
-

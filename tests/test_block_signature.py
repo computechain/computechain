@@ -1,4 +1,5 @@
 import pytest
+import json
 import time
 import tempfile
 import shutil
@@ -13,6 +14,9 @@ from computechain.protocol.types.validator import Validator, ValidatorSet
 @pytest.fixture
 def chain_setup():
     temp_dir = tempfile.mkdtemp()
+    genesis_path = os.path.join(temp_dir, "genesis.json")
+    with open(genesis_path, "w") as f:
+        json.dump({"alloc": {}, "validators": [], "genesis_time": int(time.time()) - 100}, f)
     config = NetworkConfig(
         network_id="testnet",
         chain_id="computechain-1",
@@ -43,11 +47,7 @@ def chain_setup():
     
     # Mock chain state to height 10
     chain.height = 10
-    # Ensure timestamp aligns so Round 0 is expected or predictable
-    # If block time is 1s, and we want next block at T.
-    # Last block was at T - 1.
-    now = int(time.time())
-    chain.last_block_timestamp = now - 1 
+    chain.last_block_timestamp = chain.genesis_time + (chain.height * config.block_time_sec)
     chain.last_hash = "0"*64
     
     yield chain, priv, addr
@@ -59,7 +59,7 @@ def test_block_signature_valid(chain_setup):
     
     # Prepare next block parameters
     next_height = chain.height + 1 # 11
-    timestamp = int(time.time())
+    timestamp = chain.genesis_time + (next_height * chain.config.block_time_sec)
     
     header = BlockHeader(
         height=next_height,
@@ -67,6 +67,7 @@ def test_block_signature_valid(chain_setup):
         timestamp=timestamp,
         chain_id="computechain-1",
         proposer_address=val_addr,
+        round=0,
         tx_root="0"*64,
         state_root=chain.state.compute_state_root()
     )
@@ -84,9 +85,10 @@ def test_block_signature_invalid(chain_setup):
     header = BlockHeader(
         height=chain.height + 1,
         prev_hash=chain.last_hash,
-        timestamp=int(time.time()),
+        timestamp=chain.genesis_time + ((chain.height + 1) * chain.config.block_time_sec),
         chain_id="computechain-1",
         proposer_address=val_addr,
+        round=0,
         tx_root="0"*64,
         state_root=chain.state.compute_state_root()
     )
@@ -105,9 +107,10 @@ def test_block_signature_missing(chain_setup):
     header = BlockHeader(
         height=chain.height + 1,
         prev_hash=chain.last_hash,
-        timestamp=int(time.time()),
+        timestamp=chain.genesis_time + ((chain.height + 1) * chain.config.block_time_sec),
         chain_id="computechain-1",
         proposer_address=val_addr,
+        round=0,
         tx_root="0"*64,
         state_root=chain.state.compute_state_root()
     )
@@ -129,6 +132,7 @@ def test_block_future_timestamp(chain_setup):
         timestamp=future_ts,
         chain_id="computechain-1",
         proposer_address=val_addr,
+        round=0,
         tx_root="0"*64,
         state_root=chain.state.compute_state_root()
     )
@@ -137,5 +141,5 @@ def test_block_future_timestamp(chain_setup):
     sig = sign(bytes.fromhex(header.hash()), priv).hex()
     block = Block(header=header, txs=[], pq_signature=sig)
     
-    with pytest.raises(ValueError, match="Block timestamp too far in future"):
+    with pytest.raises(ValueError, match="Invalid timestamp for slot"):
         chain.add_block(block)

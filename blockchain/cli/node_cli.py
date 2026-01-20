@@ -4,6 +4,7 @@ import sys
 import logging
 import asyncio
 import json
+import time
 import shutil
 from uvicorn import Config, Server
 from ...protocol.crypto.keys import generate_private_key, public_key_from_private
@@ -134,7 +135,8 @@ def cmd_init(args):
                         "power": genesis_stake,
                         "is_active": True
                     }
-                ]
+                ],
+                "genesis_time": int(time.time())
             }
             f.write(json.dumps(genesis_data, indent=2))
     else:
