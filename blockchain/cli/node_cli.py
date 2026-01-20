@@ -312,6 +312,9 @@ async def run_node_async(args):
     # Setup EventBus → SSE bridge (Phase 1.4)
     api.setup_event_bridge(chain)
 
+    # Set P2P node for TX broadcast
+    api.p2p_node = p2p_node
+
     # Start RPC (Async Task)
     config = Config(app=rpc_app, host=args.host, port=args.port, log_level="info")
     server = Server(config)

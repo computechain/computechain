@@ -289,7 +289,20 @@ class Mempool:
             # Phase 1.4.1: Nonce-aware mempool logic
             if state:
                 account = state.get_account(tx.from_address)
-                expected_nonce = account.nonce
+                blockchain_nonce = account.nonce
+
+                # Calculate expected nonce: blockchain nonce + count of TXs in main pool from this sender
+                # This ensures TX are added to main pool sequentially, not just the first one
+                sender_txs_in_pool = [t for t in self.transactions.values() if t.from_address == tx.from_address]
+                sender_nonces_in_pool = sorted([t.nonce for t in sender_txs_in_pool])
+
+                # Find the next expected nonce (first gap or next sequential)
+                expected_nonce = blockchain_nonce
+                for nonce in sender_nonces_in_pool:
+                    if nonce == expected_nonce:
+                        expected_nonce += 1
+                    elif nonce > expected_nonce:
+                        break  # Gap found
 
                 # Reject TRANSFER with amount=0 (meaningless transaction)
                 from ...protocol.types.tx import TxType

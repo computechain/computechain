@@ -89,6 +89,16 @@ class P2PNode:
         self._block_cache: Dict[int, Block] = {}
         self._snapshot_buffers: Dict[str, Dict[str, int | Dict[int, bytes]]] = {}
         self._background_tasks: List[asyncio.Task] = []
+        self._sync_mode: Optional[str] = None
+        self._header_sync_task: Optional[asyncio.Task] = None
+        self._block_sync_task: Optional[asyncio.Task] = None
+        self._header_event = asyncio.Event()
+        self._block_event = asyncio.Event()
+        self._header_response: Optional[List[BlockHeader]] = None
+        self._block_response: Optional[List[Block]] = None
+        self._highest_header_height: int = -1
+        self._common_ancestor_height: Optional[int] = None
+        self._block_sync_next_height: Optional[int] = None
 
         # Sync tracking (Phase 1.5: prevent stuck sync states)
         self._syncing_with_peer: Optional[asyncio.StreamWriter] = None
@@ -442,10 +452,56 @@ class P2PNode:
         await self.send_message(writer, msg)
 
     async def handle_blocks_response(self, writer, payload_dict):
-        if self.sync_state != SyncState.SYNCING or self._sync_phase != "blocks":
+        if self.sync_state != SyncState.SYNCING:
+            return
+        # In pipelined mode, _sync_phase stays "headers" but we still process block responses
+        if self._sync_mode != "pipelined" and self._sync_phase != "blocks":
             return
 
         resp = BlocksResponsePayload(**payload_dict)
+        if self._sync_mode == "pipelined":
+            if not resp.blocks:
+                self._block_response = []
+                self._block_event.set()
+                return
+
+            rollback_count = 0
+            max_rollbacks = 50
+            for b_data in resp.blocks:
+                block = Block.model_validate(b_data)
+                if self.on_new_block:
+                    try:
+                        await self.on_new_block(block)
+                    except Exception as e:
+                        error_msg = str(e)
+                        logger.warning(f"Sync failed at block {block.header.height}: {e}")
+
+                        if "State root mismatch" in error_msg:
+                            peer = self.active_peers.get(writer)
+                            if peer:
+                                logger.warning("State root mismatch during sync; restarting header sync to find common ancestor.")
+                                await self._restart_header_sync(peer)
+                                self._block_response = []
+                                self._block_event.set()
+                                return
+
+                        if rollback_count < max_rollbacks:
+                            rollback_count += 1
+                            continue
+
+                        logger.error(f"Sync giving up after {rollback_count} rollbacks")
+                        self.sync_state = SyncState.IDLE
+                        self._syncing_with_peer = None
+                        self._sync_started_at = 0
+                        self._sync_phase = None
+                        self._block_response = []
+                        self._block_event.set()
+                        return
+
+            self._block_response = [Block.model_validate(b) for b in resp.blocks]
+            self._block_event.set()
+            return
+
         if not resp.blocks:
             self.sync_state = SyncState.SYNCED
             self._syncing_with_peer = None
@@ -468,6 +524,13 @@ class P2PNode:
                 except Exception as e:
                     error_msg = str(e)
                     logger.warning(f"Sync failed at block {block.header.height}: {e}")
+
+                    if "State root mismatch" in error_msg:
+                        peer = self.active_peers.get(writer)
+                        if peer:
+                            logger.warning("State root mismatch during sync; restarting header sync to find common ancestor.")
+                            await self._restart_header_sync(peer)
+                            return
 
                     # Check if this is a fork/divergence error that might have triggered rollback
                     # If on_new_block rolled back, we should re-request blocks from the new height
@@ -507,11 +570,34 @@ class P2PNode:
             logger.info("Sync finished (caught up)")
             await self._apply_cached_blocks()
 
+    async def _restart_header_sync(self, peer: Peer):
+        if not self.get_current_height:
+            return
+        my_height = self.get_current_height()
+        from_h = max(0, my_height - self.HEADER_SYNC_WINDOW)
+        to_h = peer.best_height
+        self._common_ancestor_height = None
+        self._highest_header_height = my_height
+        self._header_sync_from = from_h
+        self._header_sync_to = to_h
+        if self._sync_mode != "pipelined":
+            self.sync_state = SyncState.SYNCING
+            self._syncing_with_peer = peer.writer
+            self._sync_started_at = time.time()
+            self._sync_phase = "headers"
+            await self.request_headers(peer, from_h, to_h)
+
     async def handle_headers_response(self, writer, payload_dict):
         if self.sync_state != SyncState.SYNCING or self._sync_phase != "headers":
             return
 
         resp = HeadersResponsePayload(**payload_dict)
+        if self._sync_mode == "pipelined":
+            headers = [BlockHeader.model_validate(h) for h in resp.headers]
+            self._header_response = headers
+            self._header_event.set()
+            return
+
         if not resp.headers:
             logger.warning("Header sync failed: empty response")
             self.sync_state = SyncState.IDLE
@@ -693,11 +779,21 @@ class P2PNode:
             await self.request_snapshot(peer, peer.latest_snapshot_height)
             return
 
+        self._sync_mode = "pipelined"
+        self._common_ancestor_height = None
+        self._highest_header_height = my_height
+        self._block_sync_next_height = my_height + 1
+        self._header_event.clear()
+        self._block_event.clear()
+
         from_h = max(0, my_height - self.HEADER_SYNC_WINDOW)
-        to_h = peer.best_height
+        to_h = min(peer.best_height, from_h + self.MAX_HEADERS_PER_MESSAGE - 1)
         self._header_sync_from = from_h
         self._header_sync_to = to_h
-        await self.request_headers(peer, from_h, to_h)
+
+        self._reset_sync_tasks()
+        self._header_sync_task = asyncio.create_task(self._header_sync_worker(peer))
+        self._block_sync_task = asyncio.create_task(self._block_sync_worker(peer))
 
     async def request_blocks(self, peer: Peer, from_h: int, to_h: int):
         if to_h - from_h + 1 > self.MAX_BLOCKS_PER_MESSAGE:
@@ -740,6 +836,138 @@ class P2PNode:
                 logger.warning(f"Failed to apply cached block {height}: {e}")
 
         self._block_cache.clear()
+
+    def _reset_sync_tasks(self):
+        for task in (self._header_sync_task, self._block_sync_task):
+            if task and not task.done():
+                task.cancel()
+        self._header_sync_task = None
+        self._block_sync_task = None
+
+    async def _header_sync_worker(self, peer: Peer):
+        while self.sync_state == SyncState.SYNCING and self._sync_mode == "pipelined":
+            my_height = self.get_current_height() if self.get_current_height else -1
+            if peer.best_height <= my_height:
+                self._highest_header_height = max(self._highest_header_height, peer.best_height)
+                self.sync_state = SyncState.SYNCED
+                self._syncing_with_peer = None
+                self._sync_started_at = 0
+                self._sync_phase = None
+                logger.info("Header sync: peer not ahead, finishing sync")
+                return
+
+            if self._common_ancestor_height is not None:
+                # Common ancestor already found; rely on peer best_height to drive block sync.
+                self._highest_header_height = max(self._highest_header_height, peer.best_height)
+                await asyncio.sleep(0.5)
+                continue
+
+            if self._header_sync_from > peer.best_height:
+                await asyncio.sleep(0.5)
+                continue
+
+            to_h = min(peer.best_height, self._header_sync_from + self.MAX_HEADERS_PER_MESSAGE - 1)
+            await self.request_headers(peer, self._header_sync_from, to_h)
+            self._header_event.clear()
+
+            try:
+                await asyncio.wait_for(self._header_event.wait(), timeout=self.SYNC_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("Header sync timeout; retrying")
+                continue
+
+            headers = self._header_response or []
+            self._header_response = None
+            if not headers:
+                logger.warning("Header sync failed: empty response")
+                await asyncio.sleep(0.5)
+                continue
+
+            headers = sorted(headers, key=lambda h: h.height)
+            last_header = headers[-1]
+            self._highest_header_height = max(self._highest_header_height, last_header.height)
+
+            if self._common_ancestor_height is None and self.get_block_by_height:
+                common_height = None
+                for hdr in headers:
+                    local_blk = self.get_block_by_height(hdr.height)
+                    if local_blk and local_blk.hash() == hdr.hash():
+                        common_height = hdr.height
+
+                my_height = self.get_current_height() if self.get_current_height else -1
+                if common_height is None:
+                    if my_height < 0:
+                        common_height = -1
+                    elif self._header_sync_from == 0:
+                        logger.error("Header sync failed: no common ancestor found")
+                        self.sync_state = SyncState.IDLE
+                        self._syncing_with_peer = None
+                        self._sync_started_at = 0
+                        self._sync_phase = None
+                        return
+                    else:
+                        new_to = self._header_sync_from - 1
+                        new_from = max(0, new_to - self.HEADER_SYNC_WINDOW + 1)
+                        self._header_sync_from = new_from
+                        continue
+
+                self._common_ancestor_height = common_height
+                if my_height > common_height and self.rollback_to_height:
+                    logger.warning(f"Fork detected. Rolling back to common ancestor {common_height}")
+                    self.rollback_to_height(common_height)
+                    self._block_sync_next_height = common_height + 1
+
+            self._header_sync_from = last_header.height + 1
+            if self._header_sync_from > peer.best_height:
+                await asyncio.sleep(0.2)
+
+    async def _block_sync_worker(self, peer: Peer):
+        while self.sync_state == SyncState.SYNCING and self._sync_mode == "pipelined":
+            if self._common_ancestor_height is None:
+                await asyncio.sleep(0.1)
+                continue
+
+            if self._block_sync_next_height is None:
+                self._block_sync_next_height = (self.get_current_height() if self.get_current_height else -1) + 1
+
+            if self._highest_header_height < self._block_sync_next_height:
+                await asyncio.sleep(0.2)
+                continue
+
+            to_h = min(
+                self._block_sync_next_height + self.MAX_BLOCKS_PER_MESSAGE - 1,
+                self._highest_header_height,
+                peer.best_height,
+            )
+
+            await self.request_blocks(peer, self._block_sync_next_height, to_h)
+            self._block_event.clear()
+
+            try:
+                await asyncio.wait_for(self._block_event.wait(), timeout=self.SYNC_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("Block sync timeout; retrying")
+                continue
+
+            if self._block_response is None:
+                await asyncio.sleep(0.1)
+                continue
+
+            if not self._block_response:
+                await asyncio.sleep(0.2)
+                continue
+
+            self._block_response = None
+            self._block_sync_next_height = (self.get_current_height() if self.get_current_height else -1) + 1
+
+            if self._block_sync_next_height > peer.best_height:
+                self.sync_state = SyncState.SYNCED
+                self._syncing_with_peer = None
+                self._sync_started_at = 0
+                self._sync_phase = None
+                logger.info("Sync finished (caught up)")
+                await self._apply_cached_blocks()
+                return
 
     async def send_message(self, writer, msg: P2PMessage):
         try:

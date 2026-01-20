@@ -27,6 +27,7 @@ app.add_middleware(
 )
 chain: Optional[Blockchain] = None
 mempool: Optional[Mempool] = None
+p2p_node = None  # P2P node for transaction broadcast
 
 # Event streaming for cross-process EventBus (Phase 1.4)
 event_queues: List[Queue] = []  # List of client queues for SSE
@@ -296,6 +297,7 @@ async def get_jailed_validators():
 
 @app.post("/tx/send")
 async def send_tx(tx: Transaction):
+    global p2p_node
     if not chain or not mempool:
         raise HTTPException(status_code=503, detail="Node not initialized")
 
@@ -309,6 +311,13 @@ async def send_tx(tx: Transaction):
         # Track transaction as pending (Phase 1.4)
         from blockchain.core.tx_receipt import tx_receipt_store
         tx_receipt_store.add_pending(tx.hash_hex)
+
+        # Broadcast TX to P2P peers
+        if p2p_node:
+            try:
+                await p2p_node.broadcast_tx(tx)
+            except Exception as e:
+                logger.warning(f"Failed to broadcast tx {tx.hash_hex[:8]}: {e}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -94,11 +94,13 @@ NETWORKS: Dict[str, NetworkConfig] = {
         block_gas_limit=50_000_000,
         max_tx_per_block=500,
         genesis_premine=1_000_000_000 * 10**18,
-        epoch_length_blocks=10,
+        epoch_length_blocks=100,              # Was 10, now 100 (20 blocks per validator with 5 vals)
         min_validator_stake=1000,
         max_validators=5,
+        min_uptime_score=0.5,                 # Was 0.75, now 0.5 (can miss half blocks)
+        max_missed_blocks_sequential=20,      # Was 10, now 20 (more tolerance before jail)
         # Deterministic Faucet Key for Devnet
-        faucet_priv_key="4f3edf982522b4e51b7e8b5f2f9c4d1d7a9e5f8c2b6d4e1a3c5b7d9e0f1a2b3c" 
+        faucet_priv_key="4f3edf982522b4e51b7e8b5f2f9c4d1d7a9e5f8c2b6d4e1a3c5b7d9e0f1a2b3c"
     ),
     "testnet": NetworkConfig(
         network_id="testnet",
