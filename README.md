@@ -11,8 +11,9 @@ The network features a production-ready validator system with performance tracki
 ## ✨ Key Features
 
 ### 🔐 **Consensus & Security**
-* **Tendermint BFT Consensus** with instant finality (10s block time)
-* **Post-Quantum Signature Architecture** (Dilithium/Falcon-ready)
+* **Tendermint-style PoA Consensus** with instant finality (5s block time)
+* **Deterministic Slot-based Block Production** with genesis_time reference
+* **Post-Quantum Signature Architecture** (Dilithium-ready)
 * **Validator Performance Tracking** with automated jailing and slashing
 * **Real-time Event System** (SSE) for transaction tracking and monitoring
 
@@ -27,7 +28,7 @@ The network features a production-ready validator system with performance tracki
 ### 👥 **Validator System**
 * **Metadata Support**: Validators can set name, website, description
 * **Performance Monitoring**: Uptime score, missed blocks, jail count
-* **Minimum Uptime Requirement**: 75% uptime to remain in active set
+* **Configurable Uptime Threshold**: min_uptime_score parameter (default 50%)
 * **Early Unjail**: Pay 1000 CPC to exit jail early
 * **Dashboard**: Real-time web dashboard with validator leaderboard
 
@@ -41,7 +42,7 @@ The network features a production-ready validator system with performance tracki
 * **Prometheus Metrics**: Block metrics, validator stats, economic tracking
 * **Upgrade Protocol**: Versioning, state migration framework
 * **Transaction TTL**: Auto-cleanup of expired transactions (1 hour)
-* **Performance**: ~10 TPS sustained (Phase 1), roadmap to 100+ TPS
+* **Performance**: 50-60 TPS sustained, roadmap to 100+ TPS
 
 ---
 
@@ -151,7 +152,8 @@ python3 -m cli.main tx unjail --from mykey
 - DELEGATE/UNDELEGATE system
 - UNJAIL transaction
 - Graduated slashing (5%, 10%, 100%)
-- Min uptime score filter (0.75)
+- Deterministic slot-based consensus
+- Configurable performance thresholds
 
 ---
 
@@ -172,11 +174,13 @@ python3 -m cli.main tx unjail --from mykey
 
 ## 🎯 Network Parameters (Devnet)
 
-* **Block Time**: 10 seconds
-* **Epoch Length**: 10 blocks
+* **Block Time**: 5 seconds
+* **Epoch Length**: 100 blocks (~8 minutes)
 * **Max Validators**: 5
+* **Max Rounds per Height**: 10
 * **Min Validator Stake**: 1,000 CPC
-* **Min Uptime Score**: 75%
+* **Min Uptime Score**: 50% (configurable)
+* **Max Missed Blocks**: 20 (before jail)
 * **Jail Duration**: 100 blocks
 * **Slashing Rate**: 5% (first offense), 10% (second), 100% (third+)
 * **Unjail Fee**: 1,000 CPC

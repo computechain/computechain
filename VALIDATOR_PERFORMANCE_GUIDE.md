@@ -22,7 +22,7 @@ This guide covers all validator features from performance monitoring to delegati
 - Tracks blocks proposed vs expected for each validator
 - Monitors consecutive missed blocks
 - Records last seen activity
-- Minimum uptime requirement: 75%
+- Minimum uptime requirement: 50% (configurable)
 
 ### 3. **Performance Scoring**
 Formula:
@@ -172,14 +172,14 @@ The web dashboard shows:
 1. Start 2 nodes (Node A and Node B)
 2. Stake 4 validators total
 3. Stop Node B (2 validators go offline)
-4. Wait for epoch transition (10 blocks)
+4. Wait for epoch transition (100 blocks on devnet)
 5. **Expected Result**: Offline validators get marked with missed_blocks
 
 ### Scenario 4: Test Jailing
 
 1. Start nodes with multiple validators
 2. Stop one node completely
-3. Wait until that validator misses 10 blocks
+3. Wait until that validator misses 20 blocks
 4. **Expected Result**: Validator gets jailed, slashed 5%, removed from active set
 5. Check dashboard to see jailed validator
 
@@ -208,9 +208,14 @@ Edit `protocol/config/params.py` to customize:
 
 ```python
 # In NetworkConfig.__init__:
+# Epoch & Slots
+epoch_length_blocks=100,            # Blocks per epoch (devnet)
+block_time_sec=5,                   # Block time in seconds
+max_rounds_per_height=10,           # Max rounds before timeout
+
 # Performance & Slashing
-min_uptime_score=0.75,              # Minimum uptime for active set (75%)
-max_missed_blocks_sequential=10,    # Missed blocks before jail
+min_uptime_score=0.5,               # Minimum uptime for active set (50%)
+max_missed_blocks_sequential=20,    # Missed blocks before jail
 jail_duration_blocks=100,           # Jail duration in blocks
 slashing_penalty_rate=0.05,         # Base slashing rate (5%)
 ejection_threshold_jails=3,         # Jails before permanent ejection
@@ -342,7 +347,7 @@ curl http://localhost:8000/metrics | grep mempool
 
 **Current Architecture (Phase 1.4):**
 - **Sustained TPS**: ~10 TPS
-- **Block Time**: 10 seconds
+- **Block Time**: 5 seconds
 - **Max TX/Block**: 100
 - **Consensus**: Tendermint BFT (instant finality)
 - **Validation**: Sequential (single-threaded)
@@ -377,7 +382,7 @@ See `ROADMAP.md` and `TEST_GUIDE.md` for detailed scalability roadmap.
 - [x] Commission-based reward distribution
 - [x] Unjail transaction (early release with 1000 CPC fee)
 - [x] Graduated slashing (5% → 10% → 100%)
-- [x] Min uptime score filter (75%)
+- [x] Min uptime score filter (configurable)
 - [x] Real-time web dashboard
 
 ## 🔮 Future Enhancements

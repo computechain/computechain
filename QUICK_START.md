@@ -80,8 +80,8 @@ For testing with multiple validators and transaction load:
 # Medium load test (10-50 TPS) - testing performance limits
 ./start_test.sh medium 24
 
-# High load test (100-500 TPS) - NOT RECOMMENDED
-# Current architecture supports ~10 TPS sustained
+# High load test (100-500 TPS) - stress testing
+# Current architecture supports 50-60 TPS sustained
 ```
 
 **What this does:**
@@ -196,7 +196,7 @@ curl -N http://localhost:8000/events/stream
 
 3. **Watch the dashboard:**
    - Missed blocks will increase
-   - After 10 consecutive misses → JAIL! 🔒
+   - After 20 consecutive misses → JAIL! 🔒
    - Validator removed from active set
    - 5% stake penalty applied
 
@@ -234,16 +234,17 @@ curl -N http://localhost:8000/events/stream
 
 ## 📊 Performance Metrics
 
-**Current Architecture (Phase 1):**
-- **Sustained TPS**: ~10 TPS
-- **Block Time**: 10 seconds
-- **Max TX/Block**: 100
-- **Consensus**: Tendermint BFT (instant finality)
+**Current Architecture (Phase 1.5):**
+- **Sustained TPS**: 50-60 TPS
+- **Block Time**: 5 seconds
+- **Epoch Length**: 100 blocks (~8 minutes)
+- **Max TX/Block**: 500
+- **Consensus**: Tendermint-style PoA (instant finality)
 
 **Future Targets:**
-- Phase 1.4.1: 100 TPS (5s blocks, parallel validation)
-- Phase 1.4.2: 300 TPS (3s blocks, state caching)
-- Phase 1.4.3: 1000+ TPS (Layer 2, sharding)
+- Phase 2: 100 TPS (parallel validation)
+- Phase 3: 300 TPS (state caching)
+- Phase 4+: 1000+ TPS (Layer 2, sharding)
 
 See `ROADMAP.md` for detailed scalability roadmap.
 
@@ -319,5 +320,5 @@ tail -f logs/validator_1.log | grep -i error
 
 ---
 
-**Last Updated:** December 25, 2025
-**Current Version:** Phase 1.4 (SSE Events, TX TTL, Performance Analysis)
+**Last Updated:** January 21, 2026
+**Current Version:** Phase 1.5 (Deterministic Slots, 50-60 TPS)
