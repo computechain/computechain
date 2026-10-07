@@ -68,7 +68,7 @@ class EventBus:
         # Update Prometheus metrics for tx_confirmed events (Phase 1.4)
         if event_type == 'tx_confirmed':
             try:
-                from blockchain.observability.metrics import event_confirmations_total
+                from ..observability.metrics import event_confirmations_total
                 event_confirmations_total.inc()
             except Exception as e:
                 logger.debug(f"Failed to update event confirmation metric: {e}")

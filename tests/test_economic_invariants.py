@@ -1,195 +1,94 @@
-# MIT License
-# Copyright (c) 2025 Hashborn
-
-"""
-Economic Invariant Tests (Phase 1.2)
-
-Tests that economic invariants hold under various scenarios:
-1. Supply conservation (genesis + minted - burned = all balances)
-2. Reward distribution correctness
-3. Non-negative balances
-"""
+"""Legacy monetary invariants with real signed blocks and integer CPC units."""
+import json
+import hashlib
 
 import pytest
-import os
-import shutil
-import json
-import time
-from blockchain.core.chain import Blockchain
-from blockchain.core.state import AccountState
-from protocol.types.tx import Transaction, TxType
-from protocol.crypto.keys import generate_private_key, public_key_from_private
-from protocol.crypto.addresses import address_from_pubkey
-from protocol.config.params import CURRENT_NETWORK, DECIMALS
+from computechain.blockchain.core.chain import Blockchain
+from computechain.protocol.types.tx import Transaction, TxType
+from computechain.protocol.types.validator import Validator
+from computechain.protocol.config.params import GAS_PER_TYPE
+from computechain.protocol.config.economic_model import ECONOMIC_CONFIG
+from computechain.protocol.crypto.keys import public_key_from_private
+from computechain.protocol.crypto.addresses import address_from_pubkey
+
+UNIT = 10**18
+KEY = hashlib.sha256(b"economic-invariants-public-fixture").digest()
+PUB = public_key_from_private(KEY)
+ADDRESS = address_from_pubkey(PUB)
+VAL = address_from_pubkey(PUB, prefix="cpcvalcons")
+GENESIS_SUPPLY = 10000 * UNIT
 
 
 @pytest.fixture
-def chain():
-    """Create a test blockchain."""
-    db_dir = "./test_invariants_db"
-    if os.path.exists(db_dir):
-        shutil.rmtree(db_dir)
-    os.makedirs(db_dir, exist_ok=True)
+def chain(tmp_path):
+    validator = Validator(address=VAL, pq_pub_key=PUB.hex(), power=1000 * UNIT,
+                          self_stake=1000 * UNIT, reward_address=ADDRESS, is_active=True)
+    (tmp_path / "genesis.json").write_text(json.dumps({"genesis_time": 1700000000,
+        "alloc": {ADDRESS: GENESIS_SUPPLY - validator.self_stake}, "validators": [validator.model_dump()]}))
+    chain = Blockchain(str(tmp_path / "chain.sqlite"), enable_snapshots=False)
+    yield chain
+    chain.db.conn.close()
 
-    with open(os.path.join(db_dir, "genesis.json"), "w") as f:
-        json.dump({"alloc": {}, "validators": [], "genesis_time": int(time.time()) - 100}, f)
 
-    db_path = os.path.join(db_dir, "chain.db")
-    blockchain = Blockchain(db_path=db_path)
-    yield blockchain
+def signed(kind, amount, nonce=0, payload=None):
+    gas = GAS_PER_TYPE[kind]
+    tx = Transaction(tx_type=kind, from_address=ADDRESS, amount=amount, nonce=nonce,
+                     gas_limit=gas, gas_price=1000, fee=gas*1000,
+                     pub_key=PUB.hex(), payload=payload or {})
+    tx.sign(KEY)
+    return tx
 
-    # Cleanup
-    if os.path.exists(db_dir):
-        shutil.rmtree(db_dir)
+
+def propose(chain, transactions=()):
+    # Build a signed block whose root includes the complete monetary transition.
+    from computechain.protocol.types.block import Block, BlockHeader
+    from computechain.protocol.crypto.hash import merkle_root
+    from computechain.protocol.crypto import pq
+    h = chain.height + 1
+    value = Block(header=BlockHeader(height=h, prev_hash=chain.last_hash,
+        timestamp=chain.genesis_time + h*chain.config.block_time_sec, chain_id=chain.config.chain_id,
+        proposer_address=VAL, tx_root=merkle_root([bytes.fromhex(t.hash()) for t in transactions]).hex(),
+        state_root="", compute_root=chain.compute_poc_root(transactions),
+        gas_used=sum(GAS_PER_TYPE[t.tx_type] for t in transactions), gas_limit=chain.config.block_gas_limit), txs=list(transactions))
+    candidate = chain.state.clone()
+    for tx in transactions:
+        candidate.apply_transaction(tx, current_height=h)
+    chain.finalize_state(value, candidate)
+    value.header.state_root = candidate.compute_state_root()
+    value.pq_signature = pq.sign(bytes.fromhex(value.hash()), KEY).hex()
+    return value
 
 
 def test_supply_conservation(chain):
-    """
-    Test that total supply is conserved.
-
-    Invariant:
-        genesis_supply + total_minted - total_burned
-        = sum(all_account_balances) + sum(all_validator_stakes) + sum(all_delegations) + sum(unbonding)
-    """
-    genesis_supply = CURRENT_NETWORK.genesis_premine
-
-    # Create validator
-    val_priv = generate_private_key()
-    val_pub = public_key_from_private(val_priv)
-    val_addr = address_from_pubkey(val_pub, prefix="cpcvalcons")
-    val_reward_addr = address_from_pubkey(val_pub, prefix="cpc")
-
-    # STAKE transaction
-    stake_tx = Transaction(
-        tx_type=TxType.STAKE,
-        from_address=val_reward_addr,
-        to_address="",
-        amount=1000 * DECIMALS,
-        nonce=0,
-        gas_price=1000,
-        signature=b"",
-        public_key=val_pub.hex(),
-        payload={
-            "validator_address": val_addr,
-            "pubkey": val_pub.hex(),
-            "commission_rate": 0.10
-        }
-    )
-
-    # Sign and add to chain
-    from protocol.crypto.keys import sign
-    stake_tx.signature = sign(stake_tx.signing_bytes(), val_priv)
-
-    # Mine blocks to generate rewards
+    stake = signed(TxType.STAKE, 1000 * UNIT, payload={"pub_key": PUB.hex()})
     for i in range(5):
-        chain.add_block([stake_tx] if i == 0 else [])
-
-    # Calculate total supply
-    state = chain.state
-
-    # Get all balances
-    total_balances = sum(
-        chain.state.get_account(addr).balance
-        for addr in chain.state._accounts.keys()
-    )
-
-    # Get all validator stakes
-    total_validator_stakes = sum(
-        v.self_stake for v in state.get_all_validators()
-    )
-
-    # Get all delegations
-    total_delegations = sum(
-        v.total_delegated for v in state.get_all_validators()
-    )
-
-    # Get unbonding queue
-    total_unbonding = sum(
-        sum(entry.amount for entry in acc.unbonding_delegations)
-        for acc in state._accounts.values()
-    )
-
-    # Calculate total from accounting
-    total_from_accounting = (
-        total_balances +
-        total_validator_stakes +
-        total_delegations +
-        total_unbonding
-    )
-
-    # Calculate total from supply tracking
-    total_supply = state.get_total_supply(genesis_supply)
-
-    # INVARIANT: These must be equal
-    assert total_supply == total_from_accounting, (
-        f"Supply mismatch: "
-        f"total_supply={total_supply}, "
-        f"accounting={total_from_accounting}, "
-        f"diff={total_supply - total_from_accounting}"
-    )
-
-    print(f"✅ Supply conservation: {total_supply} = {total_from_accounting}")
-    print(f"   Genesis: {genesis_supply}")
-    print(f"   Minted: {state.total_minted}")
-    print(f"   Burned: {state.total_burned}")
+        chain.add_block(propose(chain, [stake] if i == 0 else []))
+        state = chain.state
+        accounts = state.db.get_state_by_prefix("acc:")
+        from computechain.blockchain.core.accounts import Account
+        balances = sum(Account.model_validate_json(v).balance for v in accounts.values())
+        locked = sum(v.self_stake + v.total_delegated for v in state.get_all_validators())
+        unbonding = sum(sum(e.amount for e in Account.model_validate_json(v).unbonding_delegations) for v in accounts.values())
+        assert state.get_total_supply(GENESIS_SUPPLY) == balances + locked + unbonding
 
 
 def test_non_negative_balances(chain):
-    """Test that all balances remain non-negative."""
-    # Create account
-    priv = generate_private_key()
-    pub = public_key_from_private(priv)
-    addr = address_from_pubkey(pub, prefix="cpc")
-
-    # Mine some blocks
     for _ in range(3):
-        chain.add_block([])
-
-    # Check all accounts have non-negative balance
-    for account_addr in chain.state._accounts.keys():
-        acc = chain.state.get_account(account_addr)
-        assert acc.balance >= 0, f"Account {account_addr} has negative balance: {acc.balance}"
-
-    print(f"✅ All balances non-negative")
+        chain.add_block(propose(chain))
+    before = chain.state.compute_state_root()
+    with pytest.raises(ValueError):
+        chain.state.apply_transaction(signed(TxType.STAKE, -1, payload={"pub_key": PUB.hex()}))
+    assert chain.state.compute_state_root() == before
+    assert all(a.balance >= 0 for a in chain.state._accounts.values())
+    assert all(v.self_stake >= 0 and v.total_delegated >= 0 for v in chain.state.get_all_validators())
 
 
 def test_staking_limits_enforced(chain):
-    """Test that staking limits are enforced."""
-    from protocol.config.economic_model import ECONOMIC_CONFIG
-
-    # Create validator
-    val_priv = generate_private_key()
-    val_pub = public_key_from_private(val_priv)
-    val_addr = address_from_pubkey(val_pub, prefix="cpcvalcons")
-    val_reward_addr = address_from_pubkey(val_pub, prefix="cpc")
-
-    # STAKE
-    stake_tx = Transaction(
-        tx_type=TxType.STAKE,
-        from_address=val_reward_addr,
-        to_address="",
-        amount=1000 * DECIMALS,
-        nonce=0,
-        gas_price=1000,
-        signature=b"",
-        public_key=val_pub.hex(),
-        payload={
-            "validator_address": val_addr,
-            "pubkey": val_pub.hex(),
-            "commission_rate": 0.10
-        }
-    )
-
-    from protocol.crypto.keys import sign
-    stake_tx.signature = sign(stake_tx.signing_bytes(), val_priv)
-
-    chain.add_block([stake_tx])
-
-    # Check max_validators_per_delegator is in config
+    # A one-validator genesis already exceeds the configured cap: a delegation
+    # must be rejected, not special-cased to pass a broken fixture.
+    before = chain.state.compute_state_root()
+    with pytest.raises(ValueError, match="voting power"):
+        chain.state.apply_transaction(signed(TxType.DELEGATE, 100 * UNIT, payload={"validator": VAL}))
+    assert chain.state.compute_state_root() == before
     assert ECONOMIC_CONFIG.max_validators_per_delegator == 10
-
-    # Check max_validator_power_share is in config
     assert ECONOMIC_CONFIG.max_validator_power_share == 0.20
-
-    print(f"✅ Staking limits configured: max_validators_per_delegator={ECONOMIC_CONFIG.max_validators_per_delegator}")
-    print(f"✅ Staking limits configured: max_validator_power_share={ECONOMIC_CONFIG.max_validator_power_share}")

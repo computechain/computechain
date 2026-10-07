@@ -126,7 +126,7 @@ class TxReceiptStore:
             # Update Prometheus metrics (Phase 1.4)
             if confirmation_time is not None:
                 try:
-                    from blockchain.observability.metrics import tx_confirmation_time_seconds
+                    from ..observability.metrics import tx_confirmation_time_seconds
                     tx_confirmation_time_seconds.observe(confirmation_time)
                 except Exception as e:
                     logger.debug(f"Failed to update confirmation time metric: {e}")

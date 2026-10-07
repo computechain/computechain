@@ -20,6 +20,7 @@ from ..core.state import AccountState
 from ...protocol.config.params import CURRENT_NETWORK
 
 logger = logging.getLogger(__name__)
+MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 
 
 class SnapshotManager:
@@ -83,7 +84,7 @@ class SnapshotManager:
 
         # Create snapshot object
         snapshot = Snapshot(
-            version="1.0.0",
+            version="2.0.0",
             network_id=network_id,
             height=height,
             epoch_index=state.epoch_index,
@@ -164,7 +165,9 @@ class SnapshotManager:
 
         # Load compressed snapshot
         with gzip.open(snapshot_path, 'rb') as f:
-            data = f.read()
+            data = f.read(MAX_SNAPSHOT_BYTES + 1)
+        if len(data) > MAX_SNAPSHOT_BYTES:
+            raise ValueError("Snapshot exceeds decompression limit")
 
         snapshot = Snapshot.model_validate_json(data)
 
@@ -179,7 +182,7 @@ class SnapshotManager:
 
         return snapshot
 
-    def apply_snapshot(self, snapshot: Snapshot, state: AccountState):
+    def apply_snapshot(self, snapshot: Snapshot, state: AccountState, *, trusted_state_root: str = None):
         """
         Apply a snapshot to blockchain state.
 
@@ -187,35 +190,47 @@ class SnapshotManager:
             snapshot: Snapshot to apply
             state: AccountState to populate
         """
-        logger.info(f"Applying snapshot from height {snapshot.height}...")
-
-        # Clear existing state (cache only, DB will be overwritten)
-        state._accounts.clear()
-        state._validators.clear()
-
-        # Load accounts
+        if trusted_state_root is None:
+            raise ValueError("Snapshot requires independently trusted state root")
+        if snapshot.version != "2.0.0" or not snapshot.verify_hash():
+            raise ValueError("Unsupported or corrupt snapshot")
         from ..core.accounts import Account
-        for addr, acc_json in snapshot.accounts.items():
-            acc = Account.model_validate_json(acc_json)
-            state._accounts[addr] = acc
-            state.db.set_state(f"acc:{addr}", acc_json)
-
-        # Load validators
         from ...protocol.types.validator import Validator
-        for addr, val_json in snapshot.validators.items():
-            val = Validator.model_validate_json(val_json)
-            state._validators[addr] = val
-            state.db.set_state(f"val:{addr}", val_json)
-
-        # Restore epoch info and economic tracking
-        state.epoch_index = snapshot.epoch_index
-        state.total_burned = snapshot.total_burned
-        state.total_minted = snapshot.total_minted
-
-        # Persist epoch info
-        state.db.set_state("epoch_index", str(state.epoch_index))
-        state.db.set_state("total_burned", str(state.total_burned))
-        state.db.set_state("total_minted", str(state.total_minted))
+        from ..storage.db import StorageDB
+        scratch = StorageDB(":memory:")
+        try:
+            candidate = AccountState(scratch)
+            candidate.chain_id = state.chain_id
+            candidate.epoch_index = snapshot.epoch_index
+            candidate.total_burned = snapshot.total_burned
+            candidate.total_minted = snapshot.total_minted
+            if min(snapshot.epoch_index, snapshot.total_burned, snapshot.total_minted) < 0:
+                raise ValueError("Invalid economic metadata")
+            for addr, acc_json in snapshot.accounts.items():
+                acc = Account.model_validate_json(acc_json)
+                if acc.address != addr or acc.balance < 0 or acc.nonce < 0:
+                    raise ValueError("Invalid snapshot account")
+                candidate.set_account(acc)
+            for addr, val_json in snapshot.validators.items():
+                val = Validator.model_validate_json(val_json)
+                if val.address != addr or min(val.power, val.self_stake, val.total_delegated) < 0:
+                    raise ValueError("Invalid snapshot validator")
+                candidate.set_validator(val)
+            if candidate.compute_state_root() != trusted_state_root:
+                raise ValueError("Snapshot differs from trusted state root")
+            # Replace, not overlay; preserve host metadata, not stale balances.
+            metadata = state.db.get_state_by_prefix("meta:")
+            with state.db.transaction():
+                state.db.clear_state()
+                for key, value in metadata.items():
+                    state.db.set_state(key, value)
+                candidate.db = state.db
+                candidate.persist()
+            state._accounts, state._validators = candidate._accounts, candidate._validators
+            state.epoch_index = candidate.epoch_index
+            state.total_burned, state.total_minted = candidate.total_burned, candidate.total_minted
+        finally:
+            scratch.conn.close()
 
         logger.info(
             f"Snapshot applied: epoch {snapshot.epoch_index}, "
@@ -306,6 +321,8 @@ class SnapshotManager:
         Save raw snapshot bytes (gzip-compressed JSON) to disk.
         """
         snapshot_path = self._get_snapshot_path(height)
+        if len(data) > MAX_SNAPSHOT_BYTES:
+            raise ValueError("Compressed snapshot exceeds size limit")
         with open(snapshot_path, "wb") as f:
             f.write(data)
         return snapshot_path

@@ -17,6 +17,7 @@ class BlockValidator:
         Raises ValueError on failure.
         """
         header = block.header
+        self.chain._validate_block_domain(block)
         
         # 1. Linkage Check
         if header.height != self.chain.height + 1:

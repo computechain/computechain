@@ -1,0 +1,4 @@
+# Generated protocol bindings are reproducible; index handwritten app logic instead.
+blockchain/comet/proto/
+blockchain/comet/proto_src/
+.devnet-comet/

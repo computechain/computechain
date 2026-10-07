@@ -11,6 +11,17 @@ from computechain.protocol.crypto.addresses import address_from_pubkey
 
 TEST_DB_DIR = "./test_db"
 
+
+def add_other_validator_power(state):
+    """Realistic multi-validator fixture; do not disable the 20% delegation cap."""
+    from computechain.protocol.types.validator import Validator
+    for _ in range(5):
+        pub = public_key_from_private(generate_private_key())
+        addr = address_from_pubkey(pub, prefix="cpcvalcons")
+        state.set_validator(Validator(address=addr, pq_pub_key=pub.hex(),
+            reward_address=address_from_pubkey(pub), power=1000 * 10**18,
+            self_stake=1000 * 10**18, is_active=True))
+
 @pytest.fixture
 def clean_chain():
     if os.path.exists(TEST_DB_DIR):
@@ -444,7 +455,7 @@ def test_update_validator_metadata(clean_chain):
             "name": "Test Validator",
             "website": "https://test.com",
             "description": "A test validator",
-            "commission_rate": 0.15
+            "commission_rate": 0.10  # Changes require an implemented scheduling protocol.
         }
     )
     tx_update.sign(priv)
@@ -455,12 +466,13 @@ def test_update_validator_metadata(clean_chain):
     assert val.name == "Test Validator"
     assert val.website == "https://test.com"
     assert val.description == "A test validator"
-    assert val.commission_rate == 0.15
+    assert val.commission_rate == 0.10
 
 def test_delegate_undelegate_flow(clean_chain):
     """Test DELEGATE and UNDELEGATE transactions."""
     chain = clean_chain
     state = chain.state
+    add_other_validator_power(state)
 
     # Create validator
     val_priv = generate_private_key()
@@ -614,6 +626,7 @@ def test_reward_distribution_to_delegators(clean_chain):
     """Test proportional reward distribution to delegators with commission."""
     chain = clean_chain
     state = chain.state
+    add_other_validator_power(state)
 
     # Create validator
     val_priv = generate_private_key()
@@ -743,8 +756,11 @@ def test_reward_distribution_to_delegators(clean_chain):
     from computechain.blockchain.core.rewards import calculate_block_reward
     total_reward = calculate_block_reward(1)  # Height 1
     commission_rate = val.commission_rate  # Should be 0.10 (10%)
-    commission_amount = int(total_reward * commission_rate)
-    delegators_share = total_reward - commission_amount
+    from computechain.protocol.config.economic_model import ECONOMIC_CONFIG
+    validator_pool = ECONOMIC_CONFIG.distribute_block_reward(total_reward)["validator_pool"]
+    from computechain.protocol.config.economic_model import fraction_amount
+    commission_amount = fraction_amount(validator_pool, commission_rate)
+    delegators_share = validator_pool - commission_amount
 
     # Expected delegator rewards (proportional to delegation)
     # Delegator 1: 150 CPC = 60% of total (250 CPC)
@@ -772,12 +788,13 @@ def test_reward_distribution_to_delegators(clean_chain):
         (del1_acc_after.balance - initial_del1_balance) +
         (del2_acc_after.balance - initial_del2_balance)
     )
-    assert total_distributed == total_reward
+    assert total_distributed + chain.state.total_burned == total_reward
 
 def test_unbonding_period(clean_chain):
     """Test unbonding period for UNDELEGATE (21-day lock)."""
     chain = clean_chain
     state = chain.state
+    add_other_validator_power(state)
 
     # Create validator
     val_priv = generate_private_key()

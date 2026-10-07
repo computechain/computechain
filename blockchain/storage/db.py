@@ -1,13 +1,36 @@
 import sqlite3
 import threading
+from contextlib import contextmanager
 from typing import Optional, Tuple, Dict
 
 class StorageDB:
     def __init__(self, db_path: str):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._transaction_depth = 0
         self._init_db()
+
+    @contextmanager
+    def transaction(self):
+        """Serialize a complete state/block/index commit, rolling back on any error."""
+        with self._lock:
+            if self._transaction_depth:
+                raise RuntimeError("nested storage transactions are not supported")
+            self.conn.execute("BEGIN IMMEDIATE")
+            self._transaction_depth = 1
+            try:
+                yield
+                self.conn.commit()
+            except BaseException:
+                self.conn.rollback()
+                raise
+            finally:
+                self._transaction_depth = 0
+
+    def _commit(self):
+        if not self._transaction_depth:
+            self.conn.commit()
 
     def _init_db(self):
         with self._lock:
@@ -41,13 +64,13 @@ class StorageDB:
                     value TEXT
                 )
             ''')
-            self.conn.commit()
+            self._commit()
 
     def save_block(self, height: int, block_hash: str, data: str):
         with self._lock:
             self.cursor.execute('INSERT OR REPLACE INTO blocks (height, hash, data) VALUES (?, ?, ?)', (height, block_hash, data))
             self.cursor.execute('INSERT OR REPLACE INTO block_index (hash, height) VALUES (?, ?)', (block_hash, height))
-            self.conn.commit()
+            self._commit()
 
     def get_block_by_height(self, height: int) -> Optional[str]:
         with self._lock:
@@ -81,7 +104,7 @@ class StorageDB:
                 self.cursor.execute("DELETE FROM block_index WHERE hash=?", (block_hash,))
                 # 4. Delete tx index entries for that height
                 self.cursor.execute("DELETE FROM tx_index WHERE height=?", (height,))
-                self.conn.commit()
+                self._commit()
 
     # --- Tx Index Methods ---
     def set_tx_index(self, tx_hash: str, height: int, data: str):
@@ -90,7 +113,7 @@ class StorageDB:
                 "INSERT OR REPLACE INTO tx_index (hash, height, data) VALUES (?, ?, ?)",
                 (tx_hash, height, data)
             )
-            self.conn.commit()
+            self._commit()
 
     def get_tx_by_hash(self, tx_hash: str) -> Optional[Tuple[int, str]]:
         with self._lock:
@@ -103,7 +126,7 @@ class StorageDB:
     def clear_tx_index(self):
         with self._lock:
             self.cursor.execute("DELETE FROM tx_index")
-            self.conn.commit()
+            self._commit()
 
     # --- State Methods ---
     def get_state(self, key: str) -> Optional[str]:
@@ -115,7 +138,7 @@ class StorageDB:
     def set_state(self, key: str, value: str):
         with self._lock:
             self.cursor.execute('INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)', (key, value))
-            self.conn.commit()
+            self._commit()
             
     def get_state_by_prefix(self, prefix: str) -> Dict[str, str]:
         with self._lock:
@@ -125,4 +148,4 @@ class StorageDB:
     def clear_state(self):
         with self._lock:
             self.cursor.execute('DELETE FROM state')
-            self.conn.commit()
+            self._commit()

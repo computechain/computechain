@@ -7,13 +7,15 @@ import logging
 import os
 import json
 import threading
+from fractions import Fraction
+from contextlib import nullcontext
 from ...protocol.types.block import Block, BlockHeader
 from ...protocol.types.tx import Transaction
 from ...protocol.types.poc import ComputeResult
 from ...protocol.types.common import TxType
 from ...protocol.crypto.keys import verify
 from ...protocol.crypto import pq
-from ...protocol.crypto.hash import sha256
+from ...protocol.crypto.hash import sha256, merkle_root
 from ...protocol.crypto.addresses import address_from_pubkey
 from ...protocol.types.validator import Validator, ValidatorSet
 from ...protocol.config.params import CURRENT_NETWORK, GAS_PER_TYPE
@@ -57,8 +59,15 @@ class Blockchain:
         self._load_chain_state()
 
     def _load_chain_state(self):
-        self._load_genesis_time()
         last = self.db.get_last_block()
+        if last:
+            # Never reinterpret historical v1 hashes using v2 defaults, or migrate
+            # balances automatically. Preserve old data for explicit offline migration.
+            raw = json.loads(last[2])
+            if raw.get("header", {}).get("version") != 2:
+                self.db.conn.close()
+                raise RuntimeError("Legacy v1 chain requires explicit migration; use a separate Comet devnet directory")
+        self._load_genesis_time()
         if last:
             self.height, self.last_hash, _ = last
             # Load timestamp of last block for consensus
@@ -99,6 +108,10 @@ class Blockchain:
             logger.warning(f"Failed to load genesis_time: {e}")
 
     def load_from_snapshot(self, snapshot_height: int) -> bool:
+        with self._lock:
+            return self._load_from_snapshot_impl(snapshot_height)
+
+    def _load_from_snapshot_impl(self, snapshot_height: int) -> bool:
         """
         Load blockchain state from a snapshot (Phase 1.3 - Fast Sync).
 
@@ -118,6 +131,12 @@ class Blockchain:
         if not self.snapshot_manager:
             raise RuntimeError("Snapshot system not enabled")
 
+        # The custom consensus has no light client/finality certificate. Only an
+        # already locally verified tip can anchor this application's full state root.
+        # Remote/bootstrap state sync belongs to CometBFT, never to peer checksums.
+        if snapshot_height != self.height or self.get_block(snapshot_height) is None:
+            raise ValueError("Unanchored legacy snapshot prohibited; use CometBFT verified state sync")
+
         logger.info(f"Loading blockchain state from snapshot at height {snapshot_height}...")
 
         # Load snapshot
@@ -131,25 +150,14 @@ class Blockchain:
             )
 
         # Apply snapshot to state
-        self.snapshot_manager.apply_snapshot(snapshot, self.state)
+        self.snapshot_manager.apply_snapshot(snapshot, self.state,
+            trusted_state_root=self.get_block(snapshot_height).header.state_root)
 
         # Update chain height from snapshot
-        # We need to find the block at snapshot height to set last_hash
+        # The precondition above guarantees a locally verified block at the tip.
         snapshot_block = self.get_block(snapshot_height)
-        if snapshot_block:
-            self.height = snapshot_height
-            self.last_hash = snapshot_block.hash()
-            self.last_block_timestamp = snapshot_block.header.timestamp
-        else:
-            # If block doesn't exist in DB, we still set height but with placeholder hash
-            # The node will need to sync blocks from snapshot_height onwards
-            self.height = snapshot_height
-            self.last_hash = "0" * 64  # Placeholder
-            self.last_block_timestamp = 0
-            logger.warning(
-                f"Snapshot loaded but block {snapshot_height} not in DB. "
-                f"You may need to sync blocks from a peer."
-            )
+        self.last_hash = snapshot_block.hash()
+        self.last_block_timestamp = snapshot_block.header.timestamp
 
         # Update consensus with validator set from snapshot
         self._update_consensus_from_state()
@@ -287,6 +295,10 @@ class Blockchain:
                         v["pq_pub_key"] = v.pop("pub_key")
                     
                     val_obj = Validator(**v)
+                    if "self_stake" not in v:
+                        val_obj.self_stake = val_obj.power - val_obj.total_delegated
+                    if not val_obj.reward_address:
+                        val_obj.reward_address = address_from_pubkey(bytes.fromhex(val_obj.pq_pub_key), prefix=self.config.bech32_prefix_acc)
                     # Save to state too!
                     self.state.set_validator(val_obj)
                     validators.append(val_obj)
@@ -344,6 +356,7 @@ class Blockchain:
 
     def _add_block_impl(self, block: Block) -> bool:
         # 1. Basic Validation
+        self._validate_block_domain(block)
         if block.header.height != self.height + 1:
             # Check if we already have this block (idempotency for sync)
             if block.header.height <= self.height:
@@ -403,13 +416,12 @@ class Blockchain:
             if self.consensus.validator_set.validators:
                 raise ValueError("Could not determine expected proposer")
             else:
-                logger.warning("No validators in set! Accepting block from anyone (Bootstrap mode).")
+                raise ValueError("No trusted validators configured; unsigned bootstrap blocks prohibited")
 
         # 3. Simulation / Validate Transactions
-        # NOTE: Performance tracking moved to AFTER state validation to avoid
-        # state_root mismatch. The proposer doesn't include tracking updates
-        # when computing state_root, so validators shouldn't either.
+        # Proposal, live block and replay use the same complete transition.
         tmp_state = self.state.clone()
+        tmp_state.chain_id = self.config.chain_id
         
         valid_txs = []
         cumulative_gas = 0
@@ -433,6 +445,9 @@ class Blockchain:
         if cumulative_gas > block.header.gas_limit:
              raise ValueError(f"Gas used exceeds block limit: {cumulative_gas} > {block.header.gas_limit}")
 
+        # Header commits the complete post-block state, not only post-TX balances.
+        self.finalize_state(block, tmp_state)
+
         # 4. Check State Root
         calculated_root = tmp_state.compute_state_root()
         if block.header.state_root != calculated_root:
@@ -444,42 +459,14 @@ class Blockchain:
         if block.header.compute_root != calculated_poc_root:
              raise ValueError(f"Compute root mismatch: expected {block.header.compute_root}, got {calculated_poc_root}")
         
-        # 5. Epoch Management (New Logic!)
-        # Check if this block ends an epoch
-        if (block.header.height + 1) % self.config.epoch_length_blocks == 0:
-            logger.info(f"End of Epoch {tmp_state.epoch_index}. Recalculating validators...")
-            self._process_epoch_transition(tmp_state)
-            
-            # Log active set
-            # We need to see who is active in tmp_state now
-            active = [v.address for v in tmp_state.get_all_validators() if v.is_active]
-            logger.info(f"New Validator Set: {active}")
-
-        # 6. Apply Real
-        self.state = tmp_state
-
-        # 6.1 Distribute Rewards (Block Reward + Fees)
-        self._distribute_rewards(block, self.state)
-
-        # 6.2 Process Unbonding Queue (Phase 1.2)
-        self.state.process_unbonding_queue(block.header.height)
-
-        # 6.3 Track Performance (Phase 0)
-        # NOTE: This is done AFTER state validation and state assignment
-        # to avoid state_root mismatch. The proposer doesn't include tracking
-        # updates when computing state_root. These updates are NOT part of
-        # consensus but are used locally for validator scoring at epoch boundaries.
-        self._track_proposer_performance(block)
-        self._track_missed_blocks(block)
-
-        # 7. Persist
-        self.state.persist()
-        self.db.save_block(block.header.height, block.hash(), block.model_dump_json())
-        for tx in block.txs:
-            try:
+        # 7. Persist state, block and indexes atomically, then publish in memory.
+        # Replay may already be inside a single all-history recovery transaction.
+        with nullcontext() if getattr(self, "_replaying", False) else self.db.transaction():
+            tmp_state.persist()
+            self.db.save_block(block.header.height, block.hash(), block.model_dump_json())
+            for tx in block.txs:
                 self.db.set_tx_index(tx.hash(), block.header.height, tx.model_dump_json())
-            except Exception:
-                pass
+        self.state = tmp_state
         
         # 8. Update Consensus Engine with new state
         # We reload from state to ensure consistency
@@ -489,10 +476,12 @@ class Blockchain:
         self.height = block.header.height
         self.last_hash = block.hash()
         self.last_block_timestamp = block.header.timestamp # Update TS
+        if getattr(self, "_replaying", False):
+            return True
 
         # Update Prometheus metrics (Phase 1.3)
         try:
-            from blockchain.observability.metrics import update_metrics, update_block_metrics, update_block_transaction_count, update_transaction_metrics
+            from ..observability.metrics import update_metrics, update_block_metrics, update_block_transaction_count, update_transaction_metrics
             update_block_metrics(self)  # Update counters/histograms (only on block add)
             update_metrics(self)  # Update gauges
             update_block_transaction_count(len(block.txs))  # Update tx histogram
@@ -550,6 +539,30 @@ class Blockchain:
         logger.info(f"Block {self.height} added. Hash: {self.last_hash[:8]}... (Round {round})")
         return True
 
+    def _validate_block_domain(self, block: Block):
+        header = block.header
+        if type(header.version) is not int or header.version != 2 or header.chain_id != self.config.chain_id:
+            raise ValueError("Invalid block version or chain_id")
+        if block.pq_sig_scheme_id != pq.SCHEME_ID:
+            raise ValueError("Unsupported block signature scheme")
+        if len(block.txs) > self.config.max_tx_per_block:
+            raise ValueError("Block transaction count exceeds network maximum")
+        if any(tx.version != 2 or tx.chain_id != self.config.chain_id for tx in block.txs):
+            raise ValueError("Invalid transaction version or chain_id")
+        expected = merkle_root([bytes.fromhex(tx.hash()) for tx in block.txs]).hex()
+        if header.tx_root != expected:
+            raise ValueError("Invalid tx_root")
+
+    def finalize_state(self, block: Block, state: AccountState):
+        """Shared deterministic post-TX transition for proposal, live execution and replay."""
+        state.chain_id = self.config.chain_id
+        if (block.header.height + 1) % self.config.epoch_length_blocks == 0:
+            self._process_epoch_transition(state)
+        self._distribute_rewards(block, state)
+        state.process_unbonding_queue(block.header.height)
+        self._track_proposer_performance(block, state)
+        self._track_missed_blocks(block, state)
+
     def _distribute_rewards(self, block: Block, state: AccountState):
         """
         Distributes block reward and transaction fees according to economic model.
@@ -560,7 +573,7 @@ class Blockchain:
         - Dust from integer division: burned
         - Minting/burning tracked in state
         """
-        from protocol.config.economic_model import ECONOMIC_CONFIG, TREASURY_ADDRESS
+        from ...protocol.config.economic_model import ECONOMIC_CONFIG, TREASURY_ADDRESS, fraction_amount
 
         proposer_addr = block.header.proposer_address
         val = state.get_validator(proposer_addr)
@@ -623,7 +636,7 @@ class Blockchain:
 
         if val.total_delegated > 0:
             # Validator has delegations - apply commission
-            commission_amount = int(validator_total_reward * val.commission_rate)
+            commission_amount = fraction_amount(validator_total_reward, val.commission_rate)
             delegators_share = validator_total_reward - commission_amount
 
             # Validator gets commission
@@ -733,6 +746,9 @@ class Blockchain:
     def get_block(self, height: int) -> Optional[Block]:
         data = self.db.get_block_by_height(height)
         if data:
+            raw = json.loads(data)
+            if raw.get("header", {}).get("version") != 2 or any(tx.get("version") != 2 for tx in raw.get("txs", [])):
+                raise ValueError("Historical v1 blocks require explicit migration")
             return Block.model_validate_json(data)
         return None
 
@@ -741,70 +757,32 @@ class Blockchain:
         Полностью пересчитывает state из блоков.
         Используется для восстановления / валидации БД.
         """
-        logger.info("Rebuilding state from blocks...")
-        
-        # 1. Clear state tables
-        self.db.clear_state()
-        self.db.clear_tx_index()
-        self.state = AccountState.empty(self.db)
-        self.height = -1
-        self.last_hash = "0" * 64
-        self.last_block_timestamp = 0
-        
-        # 2. Re-apply genesis allocation
-        self._apply_genesis_allocation()
-        self._apply_genesis_validators()
-        
-        # 3. Replay blocks
         last = self.db.get_last_block()
         current_height = last[0] if last else -1
-        
-        for h in range(0, current_height + 1):
-            block = self.get_block(h)
-            if not block:
-                logger.error(f"Missing block {h} during rebuild")
-                raise ValueError(f"Missing block {h}")
-
-            # Apply transactions
-            for tx in block.txs:
-                self.state.apply_transaction(tx, current_height=block.header.height)
-                try:
-                    self.db.set_tx_index(tx.hash(), block.header.height, tx.model_dump_json())
-                except Exception:
-                    pass
-
-            # Check state_root BEFORE any post-TX operations (matches proposer/validator flow)
-            actual_root = self.state.compute_state_root()
-            if block.header.state_root and block.header.state_root != actual_root:
-                 logger.warning(f"State root mismatch at {h}: expected {block.header.state_root}, got {actual_root}")
-
-            # Epoch Logic Replay (AFTER state_root check)
-            if (h + 1) % self.config.epoch_length_blocks == 0:
-                 self._process_epoch_transition(self.state)
-
-            # Distribute rewards and process unbondings (match add_block flow)
-            self._distribute_rewards(block, self.state)
-            self.state.process_unbonding_queue(block.header.height)
-            self._track_proposer_performance(block)
-            self._track_missed_blocks(block)
-
-            # Check PoC root
-            expected_poc_root = self.compute_poc_root(block.txs)
-            if block.header.compute_root and block.header.compute_root != expected_poc_root:
-                 logger.warning(f"PoC root mismatch at {h}: expected {block.header.compute_root}, got {expected_poc_root}")
-
-            # Update consensus and chain tips
-            if (h + 1) % self.config.epoch_length_blocks == 0:
-                self._update_consensus_from_state()
-            self.height = block.header.height
-            self.last_hash = block.hash()
-            self.last_block_timestamp = block.header.timestamp
-        
-        # 4. Save final state
-        self.state.persist()
-        # Update consensus
-        self._update_consensus_from_state()
-        logger.info("State rebuild complete.")
+        previous = (self.state, self.height, self.last_hash, self.last_block_timestamp,
+                    self.consensus.validator_set)
+        self._replaying = True
+        try:
+            with self.db.transaction():
+                self.db.clear_state()
+                self.db.clear_tx_index()
+                self.db.set_state("meta:genesis_time", str(self.genesis_time))
+                self.state = AccountState.empty(self.db)
+                self.state.chain_id = self.config.chain_id
+                self.height, self.last_hash, self.last_block_timestamp = -1, "0" * 64, 0
+                self.consensus.update_validator_set([])
+                self._apply_genesis_allocation()
+                self._apply_genesis_validators()
+                for h in range(current_height + 1):
+                    block = self.get_block(h)
+                    if block is None:
+                        raise ValueError(f"Missing block {h}")
+                    self._add_block_impl(block)
+        except BaseException:
+            self.state, self.height, self.last_hash, self.last_block_timestamp, self.consensus.validator_set = previous
+            raise
+        finally:
+            self._replaying = False
 
     def _process_epoch_transition(self, state: AccountState):
         """
@@ -890,37 +868,40 @@ class Blockchain:
     # Phase 0: Validator Performance & Slashing
     # ========================================
 
-    def _track_proposer_performance(self, block: Block):
+    def _track_proposer_performance(self, block: Block, state: AccountState = None):
         """
         Tracks the proposer's performance when a block is added.
         Updates blocks_proposed, last_block_height, and resets missed_blocks.
         """
         proposer_addr = block.header.proposer_address
-        proposer_val = self.state.get_validator(proposer_addr)
+        state = state if state is not None else self.state
+        proposer_val = state.get_validator(proposer_addr)
 
         if proposer_val:
             proposer_val.blocks_proposed += 1
             proposer_val.last_block_height = block.header.height
             proposer_val.last_seen_height = block.header.height
             proposer_val.missed_blocks = 0  # Reset consecutive misses
-            self.state.set_validator(proposer_val)
+            state.set_validator(proposer_val)
             logger.debug(f"Validator {proposer_addr[:12]} proposed block {block.header.height}")
-        self._track_expected_blocks(block)
+        self._track_expected_blocks(block, state)
 
-    def _track_expected_blocks(self, block: Block):
+    def _track_expected_blocks(self, block: Block, state: AccountState = None):
+        state = state if state is not None else self.state
         expected_proposer = self.consensus.get_proposer(block.header.height, round=0)
         if not expected_proposer:
             return
-        val = self.state.get_validator(expected_proposer.address)
+        val = state.get_validator(expected_proposer.address)
         if val and val.is_active:
             val.blocks_expected += 1
-            self.state.set_validator(val)
+            state.set_validator(val)
 
-    def _track_missed_blocks(self, block: Block):
+    def _track_missed_blocks(self, block: Block, state: AccountState = None):
         """
         Increments missed_blocks for validators who missed their round slots
         at the same height (round 0..round-1).
         """
+        state = state if state is not None else self.state
         if self.height < 0:
             return  # Genesis block
 
@@ -934,7 +915,7 @@ class Blockchain:
             if expected_proposer:
                 if expected_proposer.address == block.header.proposer_address:
                     continue
-                val = self.state.get_validator(expected_proposer.address)
+                val = state.get_validator(expected_proposer.address)
                 if val and val.is_active:
                     if val.last_seen_height < block.header.height - 1:
                         continue
@@ -945,7 +926,7 @@ class Blockchain:
                         f"⚠️  Validator {val.address[:12]} missed slot at height {block.header.height} "
                         f"round {missed_round} (total consecutive: {val.missed_blocks})"
                     )
-                    self.state.set_validator(val)
+                    state.set_validator(val)
 
     def _calculate_performance_score(self, val: Validator, state: AccountState) -> float:
         """
@@ -1001,10 +982,22 @@ class Blockchain:
             penalty_rate = 1.0
 
         # Calculate penalty (% of stake)
-        penalty = int(val.power * penalty_rate)
+        rate = Fraction(str(penalty_rate))
+        penalty = val.power * rate.numerator // rate.denominator
+        if val.jail_count + 1 >= self.config.ejection_threshold_jails:
+            penalty = val.power
+        old_power = val.power
+        if val.self_stake + val.total_delegated != old_power or sum(d.amount for d in val.delegations) != val.total_delegated:
+            raise ValueError("Inconsistent validator stake accounting")
 
         # Apply penalty
         val.power = max(0, val.power - penalty)
+        for delegation in val.delegations:
+            delegation.amount = delegation.amount * val.power // old_power if old_power else 0
+        val.delegations = [d for d in val.delegations if d.amount > 0]
+        val.total_delegated = sum(d.amount for d in val.delegations)
+        val.self_stake = val.power - val.total_delegated
+        state.burn_tokens(penalty, reason="validator_slashing")
         val.total_penalties += penalty
         val.jail_count += 1
         val.jailed_until_height = current_height + self.config.jail_duration_blocks

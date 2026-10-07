@@ -1,10 +1,32 @@
 # ComputeChain
 
-> ✅ **Live Testnet** | ⚠️ Use at your own risk
+> **Development update:** A new, isolated CometBFT/ABCI devnet is available.
+> See [COMETBFT.md](./COMETBFT.md) for setup, node synchronization, fault tests,
+> and current limitations. The legacy node and feature descriptions below are
+> the earlier prototype; they do not describe the new devnet's completed features.
+> Current operator scripts: `./start_test.sh` (nodes + monitoring),
+> `./start_test.sh load --duration 60`, `./start_test.sh status`, `./cleanup.sh`.
+> Stop preserves all chain data/signing state. See COMETBFT.md for Grafana access.
 
-**ComputeChain** is a Layer-1 blockchain built around a novel consensus and incentive model called **Proof-of-Compute (PoC)** — designed to execute *useful* GPU computations (targeting RTX 4090/5090 and later).
+> **Security:** This is not production-ready. Legacy v1 history is not silently
+> migrated; updated legacy signing/state commitments are incompatible with v1.
+> Legacy networking requires explicit `--allow-unsafe-legacy-devnet` and defaults
+> to loopback. Unverified PoC submissions/payouts and unscheduled commission changes
+> are disabled. ABCI is a privileged local write interface, not a public RPC API.
 
-The network features a production-ready validator system with performance tracking, automated slashing, delegation support, and comprehensive test coverage. Built with post-quantum-ready cryptography and an Ethereum-like gas model.
+**ComputeChain** is an experimental Layer-1 project for a useful-compute market.
+The current implementation is a local CometBFT/ABCI v3 devnet with signed transfers,
+staking/delegation, dynamic validators and tested synchronization. Integer devnet
+rules are in [ECONOMICS.md](blockchain/comet/ECONOMICS.md). Compute verification
+and rewards remain disabled; this is not production-ready.
+
+Current compact documentation: [English](https://github.com/computechain/docs/blob/main/docs/en/index.md)
+and [Русский](https://github.com/computechain/docs/blob/main/docs/ru/index.md).
+
+## Historical legacy prototype notes
+
+The feature descriptions and old commands below are retained for historical
+reference only. Use COMETBFT.md and the current docs for the running devnet.
 
 ---
 

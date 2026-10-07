@@ -309,7 +309,7 @@ async def send_tx(tx: Transaction):
              return {"tx_hash": tx.hash_hex, "status": "rejected", "error": reason}
 
         # Track transaction as pending (Phase 1.4)
-        from blockchain.core.tx_receipt import tx_receipt_store
+        from ..core.tx_receipt import tx_receipt_store
         tx_receipt_store.add_pending(tx.hash_hex)
 
         # Broadcast TX to P2P peers
@@ -334,7 +334,7 @@ async def get_tx_receipt(tx_hash: str):
         raise HTTPException(status_code=503, detail="Node not initialized")
 
     try:
-        from blockchain.core.tx_receipt import tx_receipt_store, TxReceipt
+        from ..core.tx_receipt import tx_receipt_store, TxReceipt
 
         receipt = tx_receipt_store.get(tx_hash)
         if not receipt:
@@ -373,7 +373,7 @@ async def get_metrics():
     """
     try:
         from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-        from blockchain.observability.metrics import metrics_registry, update_metrics
+        from ..observability.metrics import metrics_registry, update_metrics
 
         # Update metrics with current blockchain state
         update_metrics(chain, mempool)

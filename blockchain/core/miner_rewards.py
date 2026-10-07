@@ -22,7 +22,7 @@ Flow:
 import logging
 from typing import List, Dict, Tuple
 from dataclasses import dataclass
-from protocol.config.economic_model import ECONOMIC_CONFIG
+from ...protocol.config.economic_model import ECONOMIC_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -80,46 +80,9 @@ class MinerRewardDistributor:
             logger.info(f"No miner submissions, burning miner pool: {miner_pool}")
             return 0, miner_pool
 
-        if miner_pool == 0:
-            logger.warning("Miner pool is 0, nothing to distribute")
-            return 0, 0
-
-        # Calculate total weight
-        total_weight = sum(sub.weight for sub in miner_submissions)
-
-        if total_weight == 0:
-            # All weights are 0 → burn pool
-            logger.warning("Total miner weight is 0, burning miner pool")
-            return 0, miner_pool
-
-        # Distribute proportionally
-        total_distributed = 0
-
-        for submission in miner_submissions:
-            # Calculate proportional reward
-            # reward = (miner_pool * miner_weight) / total_weight
-            miner_reward = (miner_pool * int(submission.weight * 1e6)) // int(total_weight * 1e6)
-
-            if miner_reward > 0:
-                # Get miner account
-                miner_acc = state.get_account(submission.miner_address)
-                miner_acc.balance += miner_reward
-                state.set_account(miner_acc)
-
-                total_distributed += miner_reward
-
-                logger.info(
-                    f"Distributed {miner_reward} to miner {submission.miner_address} "
-                    f"(weight: {submission.weight:.2f}, share: {submission.weight/total_weight*100:.1f}%)"
-                )
-
-        # Calculate dust (remainder)
-        dust = miner_pool - total_distributed
-
-        if dust > 0:
-            logger.info(f"Miner reward dust: {dust} (will be burned)")
-
-        return total_distributed, dust
+        # MinerSubmission contains no proof/signature. A caller cannot assert that
+        # an arbitrary weight was verified. Enable payouts only with a real protocol.
+        raise ValueError("Miner payouts disabled until cryptographic weight verification is implemented")
 
     def validate_miner_submission(
         self,

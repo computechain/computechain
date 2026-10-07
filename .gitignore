@@ -79,6 +79,10 @@ PHASE_1_4_TESTING_GUIDE.md
 *.md
 !README.md
 !README_ru.md
+!COMETBFT.md
+!blockchain/comet/ECONOMICS.md
+!blockchain/comet/proto_src/NOTICE.md
+.devnet-comet/
 # Test scripts and local guides (optional - keep for development)
 # Uncomment if you want these to be local only:
 # TEST_GUIDE.md

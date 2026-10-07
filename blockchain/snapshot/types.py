@@ -14,7 +14,7 @@ class SnapshotMetadata(BaseModel):
     """
     Snapshot metadata (stored separately for quick querying).
     """
-    version: str = Field(default="1.0.0", description="Snapshot format version")
+    version: str = Field(default="2.0.0", description="Snapshot format version")
     network_id: str = Field(..., description="Network ID (devnet/testnet/mainnet)")
     height: int = Field(..., description="Block height at snapshot")
     epoch_index: int = Field(..., description="Epoch index at snapshot")
@@ -34,7 +34,7 @@ class Snapshot(BaseModel):
     Complete state snapshot (saved to disk, compressed).
     """
     # Metadata
-    version: str = Field(default="1.0.0", description="Snapshot format version")
+    version: str = Field(default="2.0.0", description="Snapshot format version")
     network_id: str = Field(..., description="Network ID")
     height: int = Field(..., description="Block height")
     epoch_index: int = Field(..., description="Epoch index")

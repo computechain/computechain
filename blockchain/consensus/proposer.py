@@ -133,7 +133,7 @@ class BlockProposer:
                 break
 
             try:
-                tmp_state.apply_transaction(tx, current_height=height, skip_crypto_check=True)
+                tmp_state.apply_transaction(tx, current_height=height, skip_crypto_check=False)
                 valid_txs.append(tx)
                 cumulative_gas += tx_gas
             except Exception as e:
@@ -193,6 +193,9 @@ class BlockProposer:
             gas_used=cumulative_gas,
             gas_limit=block_gas_limit
         )
+
+        self.chain.finalize_state(Block(header=header, txs=txs), tmp_state)
+        header.state_root = tmp_state.compute_state_root()
 
         # 6. Sign (PQ)
         # Block hash is the header hash

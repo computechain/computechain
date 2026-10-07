@@ -73,6 +73,9 @@ def test_block_signature_valid(chain_setup):
     )
     
     # Sign
+    candidate = chain.state.clone()
+    chain.finalize_state(Block(header=header, txs=[]), candidate)
+    header.state_root = candidate.compute_state_root()
     sig = sign(bytes.fromhex(header.hash()), priv).hex()
     block = Block(header=header, txs=[], pq_signature=sig)
     

@@ -1,0 +1,8 @@
+# CometBFT v0.40.0 integration, separate from legacy optional node dependencies.
+ecdsa==0.19.2
+bech32==1.2.0
+grpcio==1.82.2
+protobuf==7.36.2
+pytest==9.1.1
+# Needed only to regenerate the checked-in upstream protobuf bindings:
+grpcio-tools==1.82.2

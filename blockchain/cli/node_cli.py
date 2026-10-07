@@ -20,10 +20,21 @@ from ..p2p.node import P2PNode, SyncState
 
 logger = logging.getLogger(__name__)
 
+
+def save_private_key(path, secret):
+    """Create a private key with secure permissions; never overwrite an old key."""
+    raw = bytes.fromhex(secret.strip())
+    public_key_from_private(raw)  # Reject invalid secp256k1 scalar/length before writing.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        stream.write(raw.hex())
+        stream.flush()
+        os.fsync(stream.fileno())
+
 def cmd_init(args):
     """Initialize node: create keys, genesis (mock), data dir."""
     data_dir = args.datadir
-    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(data_dir, mode=0o700, exist_ok=True)
 
     # === Shared Genesis Mode ===
     # If --genesis is provided, use shared genesis for multi-validator setup
@@ -38,8 +49,8 @@ def cmd_init(args):
         # Copy validator key if provided
         key_path = os.path.join(data_dir, "validator_key.hex")
         if hasattr(args, 'validator_key') and args.validator_key:
-            shutil.copy(args.validator_key, key_path)
-            os.chmod(key_path, 0o600)
+            with open(args.validator_key, "r") as source:
+                save_private_key(key_path, source.read())
             print(f"  Copied validator key to {key_path}")
 
             # Print validator info
@@ -54,8 +65,8 @@ def cmd_init(args):
         # Copy faucet key if provided
         faucet_path = os.path.join(data_dir, "faucet_key.hex")
         if hasattr(args, 'faucet_key') and args.faucet_key:
-            shutil.copy(args.faucet_key, faucet_path)
-            os.chmod(faucet_path, 0o600)
+            with open(args.faucet_key, "r") as source:
+                save_private_key(faucet_path, source.read())
             print(f"  Copied faucet key to {faucet_path}")
 
         print(f"\nNode initialized in {data_dir} (shared genesis mode)")
@@ -68,8 +79,7 @@ def cmd_init(args):
     key_path = os.path.join(data_dir, "validator_key.hex")
     if not os.path.exists(key_path):
         priv = generate_private_key()
-        with open(key_path, "w") as f:
-            f.write(priv.hex())
+        save_private_key(key_path, priv.hex())
         
         pub = public_key_from_private(priv)
         addr = address_from_pubkey(pub, prefix="cpcvalcons")
@@ -98,8 +108,7 @@ def cmd_init(args):
             # Generate random for other networks
             priv = generate_private_key()
             
-        with open(faucet_path, "w") as f:
-            f.write(priv.hex())
+        save_private_key(faucet_path, priv.hex())
         
         pub = public_key_from_private(priv)
         addr = address_from_pubkey(pub, prefix="cpc")
@@ -145,6 +154,8 @@ def cmd_init(args):
     print(f"\nNode initialized in {data_dir}")
 
 async def run_node_async(args):
+    if not getattr(args, "allow_unsafe_legacy_devnet", False):
+        raise RuntimeError("Legacy consensus is not BFT-safe. Use blockchain.comet.node; local testing requires --allow-unsafe-legacy-devnet")
     data_dir = args.datadir
     db_path = os.path.join(data_dir, "chain.db")
     key_path = os.path.join(data_dir, "validator_key.hex")
@@ -232,11 +243,7 @@ async def run_node_async(args):
                 if existing.hash() == block.hash():
                     return # Already have this exact block
                 # Different block at same height - fork detected!
-                if p2p_node.sync_state == SyncState.SYNCING:
-                    logger.info(f"Fork detected at height {block.header.height} during sync. Rolling back...")
-                    chain.rollback_last_block()
-                    # After rollback, P2P sync will retry from new height
-                    return
+                raise ValueError("Conflicting committed block; peer-driven rollback prohibited")
             
             if chain.add_block(block):
                 mempool.remove_transactions(block.txs)
@@ -264,20 +271,6 @@ async def run_node_async(args):
             error_msg = str(e)
             logging.warning(f"Rejected P2P block: {e}")
 
-            # During sync, if validation fails due to chain divergence, try rollback
-            # This handles forks where validator set or prev_hash doesn't match
-            if p2p_node.sync_state == SyncState.SYNCING:
-                divergence_errors = [
-                    "Invalid prev_hash",
-                    "Could not determine expected proposer",
-                    "Invalid proposer"
-                ]
-                if any(err in error_msg for err in divergence_errors):
-                    if chain.height > 0:
-                        logger.info(f"Fork detected during sync ({error_msg[:50]}...). Rolling back block {chain.height}...")
-                        chain.rollback_last_block()
-                        # P2P layer will re-request from the new height
-
             # Re-raise to let P2P layer trigger catchup sync
             raise
         except Exception as e:
@@ -300,7 +293,8 @@ async def run_node_async(args):
     p2p_node.get_blocks_range = chain.get_blocks_range
     p2p_node.get_headers_range = chain.get_headers_range
     p2p_node.get_block_by_height = chain.get_block
-    p2p_node.rollback_to_height = chain.rollback_to_height
+    # Never let a remote header erase committed local history.
+    p2p_node.rollback_to_height = None
     p2p_node.get_latest_snapshot_height = chain.get_latest_snapshot_height
     p2p_node.get_snapshot_bytes = chain.get_snapshot_bytes
     p2p_node.apply_snapshot_bytes = chain.load_snapshot_from_bytes
@@ -365,11 +359,12 @@ def main():
 
     # Run command
     run_parser = subparsers.add_parser("run", help="Run the node")
-    run_parser.add_argument("--host", default="0.0.0.0", help="RPC Host")
+    run_parser.add_argument("--allow-unsafe-legacy-devnet", action="store_true", help="Explicitly opt into non-BFT legacy testing; never use real funds")
+    run_parser.add_argument("--host", default="127.0.0.1", help="RPC Host")
     run_parser.add_argument("--port", type=int, default=8000, help="RPC Port")
     
     # P2P Args
-    run_parser.add_argument("--p2p-host", default="0.0.0.0", help="P2P Host")
+    run_parser.add_argument("--p2p-host", default="127.0.0.1", help="P2P Host")
     run_parser.add_argument("--p2p-port", type=int, default=9000, help="P2P Port")
     run_parser.add_argument("--peers", default="", help="Comma-separated list of peers (host:port)")
     

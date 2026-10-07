@@ -21,7 +21,7 @@ import hashlib
 import json
 import logging
 from typing import Tuple
-from protocol.config.economic_model import ECONOMIC_CONFIG
+from ...protocol.config.economic_model import ECONOMIC_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +116,9 @@ class ZKVerifier:
         Returns:
             True if signature is valid
         """
-        # Reconstruct message (same format as signer)
-        weight_bytes = str(weight).encode()
-        message = weight_bytes + b"||" + proof_data
-
-        # STUB verification (replace with real Ed25519)
-        expected_sig = hashlib.sha512(public_key + message).digest()[:64]
-        return signature == expected_sig
+        # Hashing a public key with a message is forgeable without a private key.
+        # No production signature/proof protocol is specified: fail closed.
+        return False
 
     def _verify_zk_proof(self, weight: float, proof_data: bytes) -> bool:
         """
@@ -143,32 +139,8 @@ class ZKVerifier:
         Returns:
             True if proof is valid
         """
-        try:
-            # Deserialize proof
-            proof_obj = json.loads(proof_data.decode())
-
-            # Check version matches
-            if proof_obj.get("version") != self.config.weight_calculation_version:
-                logger.warning(f"Version mismatch: {proof_obj.get('version')} != {self.config.weight_calculation_version}")
-                return False
-
-            # Check public output matches claimed weight
-            public_output = proof_obj.get("public_output")
-            if abs(public_output - weight) > 1e-6:
-                logger.warning(f"Weight mismatch: {public_output} != {weight}")
-                return False
-
-            # STUB: In production, verify actual zk-SNARK proof here
-            # Example with real ZK library:
-            # verification_key = load_vk(self.config.zk_circuit_hash)
-            # return verify_proof(verification_key, proof_obj["proof"], [weight])
-
-            # For now, accept if format is correct
-            return True
-
-        except Exception as e:
-            logger.error(f"ZK proof verification error: {e}")
-            return False
+        # JSON structure and a matching claimed output do not prove computation.
+        return False
 
     def _check_weight_bounds(self, weight: float) -> bool:
         """

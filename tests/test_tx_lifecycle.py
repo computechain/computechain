@@ -511,8 +511,8 @@ def test_tx_lifecycle_integration(clean_chain, clean_event_bus):
 # NONCE MANAGER TESTS
 # ═══════════════════════════════════════════════════════════════════
 
-def test_nonce_manager_event_based_mode():
-    """Test NonceManager with event-based tracking (use_events=True)."""
+def test_nonce_manager_explicit_confirmation():
+    """Current manager accepts explicit confirmation without a removed mode flag."""
     import sys
     import os
     # Add scripts to path for testing
@@ -527,7 +527,7 @@ def test_nonce_manager_event_based_mode():
         return blockchain_nonces.get(address, 0)
 
     # Create NonceManager with event-based mode
-    manager = NonceManager(get_blockchain_nonce, use_events=True)
+    manager = NonceManager(get_blockchain_nonce)
 
     # Get nonce
     nonce = manager.get_next_nonce('addr1')
@@ -553,8 +553,8 @@ def test_nonce_manager_event_based_mode():
     assert stats['event_confirmations'] == 1
 
 
-def test_nonce_manager_aggressive_cleanup_mode():
-    """Test NonceManager with aggressive cleanup (use_events=False)."""
+def test_nonce_manager_periodic_nonce_sync():
+    """Current manager reconciles consumed nonces without a removed mode flag."""
     import sys
     import os
     # Add scripts to path for testing
@@ -568,7 +568,7 @@ def test_nonce_manager_aggressive_cleanup_mode():
         return blockchain_nonces.get(address, 0)
 
     # Create NonceManager with aggressive cleanup mode
-    manager = NonceManager(get_blockchain_nonce, use_events=False)
+    manager = NonceManager(get_blockchain_nonce)
 
     # Send transactions
     manager.on_tx_sent('addr1', 'tx_hash_1', nonce=0)
@@ -587,7 +587,8 @@ def test_nonce_manager_aggressive_cleanup_mode():
 
     # Check statistics
     stats = manager.get_stats()
-    assert stats['aggressive_cleanups'] >= 1
+    assert stats['resyncs'] >= 1
+    assert stats['total_confirmed'] == 2
 
 
 # ═══════════════════════════════════════════════════════════════════

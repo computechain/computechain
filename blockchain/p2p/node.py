@@ -174,6 +174,8 @@ class P2PNode:
                     break
 
                 buffer += data
+                if len(buffer) > 4 * 1024 * 1024:
+                    raise ValueError("P2P frame exceeds 4 MiB limit")
                 while b'\n' in buffer:
                     line, buffer = buffer.split(b'\n', 1)
                     await self.process_message(line, writer)
@@ -647,9 +649,10 @@ class P2PNode:
                 await self.request_headers(peer, new_from, new_to)
                 return
 
-        if my_height > common_height and self.rollback_to_height:
-            logger.warning(f"Fork detected. Rolling back to common ancestor {common_height}")
-            self.rollback_to_height(common_height)
+        if my_height > common_height:
+            logger.error("Peer proposes rollback of committed history; rejecting sync source")
+            self.sync_state = SyncState.IDLE
+            return
 
         self._sync_phase = "blocks"
         self._sync_started_at = time.time()
@@ -683,48 +686,9 @@ class P2PNode:
             await self.send_message(writer, msg)
 
     async def handle_snapshot_chunk(self, writer, payload_dict):
-        if self.sync_state != SyncState.SYNCING or self._sync_phase != "snapshot":
-            return
-
-        payload = SnapshotChunkPayload(**payload_dict)
-        peer = self.active_peers.get(writer)
-        if peer is None:
-            return
-
-        key = f"{peer.persist_addr}:{payload.height}"
-        buffer = self._snapshot_buffers.get(key)
-        if buffer is None:
-            buffer = {"total": payload.total_chunks, "chunks": {}}
-            self._snapshot_buffers[key] = buffer
-
-        try:
-            chunk = base64.b64decode(payload.data_b64.encode("ascii"))
-        except Exception:
-            logger.warning("Invalid snapshot chunk encoding")
-            return
-
-        buffer["chunks"][payload.chunk_index] = chunk
-
-        if len(buffer["chunks"]) < buffer["total"]:
-            return
-
-        assembled = b"".join(buffer["chunks"][i] for i in range(buffer["total"]))
-        del self._snapshot_buffers[key]
-
-        if not self.apply_snapshot_bytes:
-            logger.warning("No snapshot apply handler configured")
-            self.sync_state = SyncState.IDLE
-            self._sync_phase = None
-            return
-
-        logger.info(f"Applying snapshot {payload.height} from peer {peer.persist_addr}")
-        applied = self.apply_snapshot_bytes(payload.height, assembled)
-        if not applied:
-            logger.error("Failed to apply snapshot; falling back to block sync")
-
-        self._sync_phase = "blocks"
-        self._sync_started_at = time.time()
-        await self.request_blocks(peer, payload.height + 1, peer.best_height)
+        # This transport cannot anchor snapshots to BFT finality. Do not allocate
+        # buffers for untrusted chunks; state sync is implemented by CometBFT.
+        return
 
     # --- Actions ---
 
@@ -767,17 +731,6 @@ class P2PNode:
         self._sync_started_at = time.time()
         self._sync_phase = "headers"
         my_height = self.get_current_height()
-
-        if (
-            peer.latest_snapshot_height
-            and self.apply_snapshot_bytes
-            and my_height + 1 < peer.latest_snapshot_height
-            and peer.best_height - my_height > self.SNAPSHOT_SYNC_THRESHOLD
-        ):
-            self._sync_phase = "snapshot"
-            self._sync_started_at = time.time()
-            await self.request_snapshot(peer, peer.latest_snapshot_height)
-            return
 
         self._sync_mode = "pipelined"
         self._common_ancestor_height = None
@@ -918,10 +871,10 @@ class P2PNode:
                         continue
 
                 self._common_ancestor_height = common_height
-                if my_height > common_height and self.rollback_to_height:
-                    logger.warning(f"Fork detected. Rolling back to common ancestor {common_height}")
-                    self.rollback_to_height(common_height)
-                    self._block_sync_next_height = common_height + 1
+                if my_height > common_height:
+                    logger.error("Peer proposes rollback of committed history; rejecting sync source")
+                    self.sync_state = SyncState.IDLE
+                    return
 
             self._header_sync_from = last_header.height + 1
             if self._header_sync_from > peer.best_height:

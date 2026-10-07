@@ -2,8 +2,10 @@ from pydantic import BaseModel
 from typing import List
 from .tx import Transaction
 from ..crypto.hash import sha256_hex
+import json
 
 class BlockHeader(BaseModel):
+    version: int = 2
     height: int                 # block number
     prev_hash: str              # hex string of SHA256 of previous block
     timestamp: int              # unix time
@@ -24,21 +26,9 @@ class BlockHeader(BaseModel):
     zk_compute_proof_hash: str | None = None
 
     def hash(self) -> str:
-        # Important: hash is calculated only on header, without body
-        payload = (
-            str(self.height)
-            + self.prev_hash
-            + str(self.timestamp)
-            + self.chain_id
-            + self.proposer_address
-            + str(self.round)
-            + self.tx_root
-            + self.state_root
-            + self.compute_root
-            + str(self.gas_used)
-            + str(self.gas_limit)
-        )
-        return sha256_hex(payload.encode("utf-8"))
+        payload = json.dumps(self.model_dump(mode="json"), sort_keys=True,
+                             separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+        return sha256_hex(b"ComputeChain/legacy-block/v2\0" + payload.encode("utf-8"))
 
 class Block(BaseModel):
     header: BlockHeader

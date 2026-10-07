@@ -1,6 +1,8 @@
 from typing import Dict, Optional, List
 import json
 import threading
+import math
+from fractions import Fraction
 from .accounts import Account
 from ...protocol.types.tx import Transaction
 from ...protocol.types.common import TxType
@@ -26,16 +28,18 @@ class AccountState:
         # Economic tracking (Phase 1.2 - Economic Model)
         self.total_burned: int = 0      # Total tokens burned (slashing, penalties, dust)
         self.total_minted: int = 0      # Total tokens minted (block rewards)
+        self.chain_id = CURRENT_NETWORK.chain_id
 
     def clone(self) -> 'AccountState':
         """Creates a copy of the state (for simulation)."""
         # Deep copy accounts in cache
-        new_accounts = {k: v.model_copy() for k, v in self._accounts.items()}
-        new_validators = {k: v.model_copy() for k, v in self._validators.items()}
+        new_accounts = {k: v.model_copy(deep=True) for k, v in self._accounts.items()}
+        new_validators = {k: v.model_copy(deep=True) for k, v in self._validators.items()}
         cloned = AccountState(self.db, new_accounts, new_validators)
         cloned.epoch_index = self.epoch_index
         cloned.total_burned = self.total_burned
         cloned.total_minted = self.total_minted
+        cloned.chain_id = self.chain_id
         return cloned
 
     def get_account(self, address: str) -> Account:
@@ -115,6 +119,17 @@ class AccountState:
             self.total_minted = int(minted)
 
     def apply_transaction(self, tx: Transaction, current_height: Optional[int] = None, skip_crypto_check: bool = False) -> bool:
+        """Execute on an isolated copy; publish only a complete valid transition."""
+        candidate = self.clone()
+        result = candidate._apply_transaction(tx, current_height, skip_crypto_check)
+        self._accounts = candidate._accounts
+        self._validators = candidate._validators
+        self.epoch_index = candidate.epoch_index
+        self.total_burned = candidate.total_burned
+        self.total_minted = candidate.total_minted
+        return result
+
+    def _apply_transaction(self, tx: Transaction, current_height: Optional[int] = None, skip_crypto_check: bool = False) -> bool:
         """
         Applies transaction to state (in-memory). Raises error on failure.
 
@@ -125,6 +140,13 @@ class AccountState:
         """
 
         # 0. Basic Sanity Checks
+        if type(tx.version) is not int or tx.version != 2 or tx.chain_id != self.chain_id:
+            raise ValueError("Unsupported transaction version or chain_id")
+        for field in ("amount", "fee", "nonce", "gas_price", "gas_limit"):
+            if type(getattr(tx, field)) is not int or not 0 <= getattr(tx, field) < 2**256:
+                raise ValueError(f"{field} must be a bounded non-negative integer")
+        if tx.tx_type == TxType.SUBMIT_RESULT:
+            raise ValueError("SUBMIT_RESULT disabled: cryptographic computation verification is not implemented")
         if tx.amount < 0:
             raise ValueError("amount must be non-negative")
         if tx.fee < 0:
@@ -242,12 +264,16 @@ class AccountState:
                         address=val_addr,
                         pq_pub_key=pub_key_hex, # Updated field
                         power=tx.amount,
+                        self_stake=tx.amount,
                         is_active=False,
                         reward_address=tx.from_address # Default reward address to sender
                     )
                 else:
                     # Add stake
+                    if val.reward_address != tx.from_address:
+                        raise ValueError("Only validator owner can add self stake; use DELEGATE")
                     val.power += tx.amount
+                    val.self_stake += tx.amount
                 
                 self.set_validator(val)
             else:
@@ -272,22 +298,24 @@ class AccountState:
             if not val:
                 raise ValueError(f"Validator {val_addr} not found")
 
-            # Check if validator has enough stake
-            if val.power < tx.amount:
-                raise ValueError(f"Insufficient stake: validator has {val.power}, trying to unstake {tx.amount}")
+            if val.reward_address != tx.from_address:
+                raise ValueError("Only validator owner can unstake")
+            # Aggregate power includes delegators' funds, which the owner cannot withdraw.
+            if tx.amount > val.self_stake or tx.amount > val.power - val.total_delegated:
+                raise ValueError("Insufficient stake: insufficient self stake")
 
             # Apply slashing penalty if validator is jailed
             penalty_amount = 0
             if val.jailed_until_height > 0:
                 # Validator is jailed - apply penalty (e.g., 10% of unstake amount)
-                penalty_rate = 0.10  # 10% penalty for unstaking while jailed
-                penalty_amount = int(tx.amount * penalty_rate)
+                penalty_amount = tx.amount // 10
 
             # Calculate actual amount to return (after penalty)
             return_amount = tx.amount - penalty_amount
 
             # Decrease validator power
             val.power -= tx.amount
+            val.self_stake -= tx.amount
 
             # Deactivate validator if power reaches zero
             if val.power == 0:
@@ -355,16 +383,19 @@ class AccountState:
                 val.description = description
 
             if "commission_rate" in tx.payload:
+                from ...protocol.config.economic_model import ECONOMIC_CONFIG
                 commission_rate = float(tx.payload["commission_rate"])
-                if commission_rate < 0 or commission_rate > 1.0:
-                    raise ValueError("Commission rate must be between 0.0 and 1.0")
-                val.commission_rate = commission_rate
+                if not math.isfinite(commission_rate) or not 0 <= commission_rate <= ECONOMIC_CONFIG.max_commission_rate:
+                    raise ValueError("Commission rate exceeds economic limits")
+                # Scheduled changes/cooldowns are not implemented; do not permit bypass.
+                if commission_rate != val.commission_rate:
+                    raise ValueError("Commission changes disabled until cooldown/announcement scheduling is implemented")
 
             self.set_validator(val)
 
         elif tx.tx_type == TxType.DELEGATE:
             # Phase 2: Delegate tokens to a validator
-            from protocol.config.economic_model import ECONOMIC_CONFIG
+            from ...protocol.config.economic_model import ECONOMIC_CONFIG
 
             validator_addr = tx.payload.get("validator")
             if not validator_addr:
@@ -401,7 +432,8 @@ class AccountState:
 
             if total_voting_power > 0:
                 power_share = new_validator_power / total_voting_power
-                if power_share > ECONOMIC_CONFIG.max_validator_power_share:
+                cap = Fraction(str(ECONOMIC_CONFIG.max_validator_power_share))
+                if new_validator_power * cap.denominator > total_voting_power * cap.numerator:
                     raise ValueError(
                         f"This delegation would give validator {power_share*100:.1f}% voting power "
                         f"(max {ECONOMIC_CONFIG.max_validator_power_share*100:.0f}%)"
@@ -540,6 +572,8 @@ class AccountState:
 
         for k, v in all_db_data.items():
             addr = k.split(":")[1]
+            if addr in self._accounts:
+                continue  # Pending nonce/balance updates are authoritative; process below.
             acc = Account.model_validate_json(v)
 
             # Check if account has unbonding delegations
@@ -669,6 +703,9 @@ class AccountState:
                     )
                 ],
             }
+            # Include every persisted validator field, notably performance counters
+            # consumed by the epoch transition. Preserve deterministic list ordering.
+            validator_payload = {**val.model_dump(mode="json"), **validator_payload}
             leaf_data = (
                 "val:"
                 + json.dumps(
@@ -680,8 +717,10 @@ class AccountState:
             ).encode("utf-8")
             items.append(sha256(leaf_data))
 
-        if not items:
-            return sha256(b"").hex()
+        metadata = {"version": 2, "chain_id": self.chain_id, "epoch_index": self.epoch_index,
+                    "total_burned": self.total_burned, "total_minted": self.total_minted}
+        items.append(sha256(b"meta:" + json.dumps(metadata, sort_keys=True,
+                     separators=(",", ":"), allow_nan=False).encode()))
 
         # 3. Compute Merkle Root
         return self._compute_merkle_root_from_leaves(items).hex()

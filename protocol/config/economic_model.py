@@ -12,6 +12,15 @@ Burn policy: Only when truly needed
 
 from dataclasses import dataclass
 from typing import Dict
+from fractions import Fraction
+
+
+def fraction_amount(amount: int, rate) -> int:
+    """Legacy decimal-config adapter: token arithmetic never uses binary floats."""
+    ratio = Fraction(str(rate))
+    if type(amount) is not int or amount < 0 or not 0 <= ratio <= 1:
+        raise ValueError("invalid integer amount or economic fraction")
+    return amount * ratio.numerator // ratio.denominator
 
 DECIMALS = 10**18
 
@@ -108,8 +117,8 @@ class EconomicConfig:
         Split block reward into validator and miner pools.
         Returns: {'validator_pool': int, 'miner_pool': int}
         """
-        validator_pool = int(total_reward * self.validator_reward_share)
-        miner_pool = int(total_reward * self.miner_reward_share)
+        validator_pool = fraction_amount(total_reward, self.validator_reward_share)
+        miner_pool = total_reward - validator_pool
 
         return {
             'validator_pool': validator_pool,
@@ -122,8 +131,8 @@ class EconomicConfig:
         Returns: {'validator_share': int, 'treasury': int, 'dust': int}
         Dust (if any) should be burned.
         """
-        validator_share = int(total_fees * self.validator_fee_share)
-        treasury = int(total_fees * self.treasury_fee_share)
+        validator_share = fraction_amount(total_fees, self.validator_fee_share)
+        treasury = fraction_amount(total_fees, self.treasury_fee_share)
         dust = total_fees - validator_share - treasury
 
         return {

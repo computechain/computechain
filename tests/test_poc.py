@@ -19,7 +19,7 @@ def db():
     yield db
     shutil.rmtree(temp_dir)
 
-def test_submit_result_valid(db):
+def test_structurally_valid_result_is_not_a_cryptographic_proof(db):
     state = AccountState(db)
     
     # Sender
@@ -54,10 +54,12 @@ def test_submit_result_valid(db):
     )
     tx.sign(priv)
     
-    assert state.apply_transaction(tx) is True
+    with pytest.raises(ValueError, match="SUBMIT_RESULT disabled"):
+        state.apply_transaction(tx)
     
     # Nonce should increase
-    assert state.get_account(addr).nonce == 1
+    assert state.get_account(addr).nonce == 0
+    assert state.get_account(addr).balance == 200_000_000
 
 def test_submit_result_invalid_worker(db):
     state = AccountState(db)
@@ -90,7 +92,7 @@ def test_submit_result_invalid_worker(db):
     )
     tx.sign(priv)
     
-    with pytest.raises(ValueError, match="Worker address mismatch"):
+    with pytest.raises(ValueError, match="SUBMIT_RESULT disabled"):
         state.apply_transaction(tx)
 
 def test_submit_result_bad_payload(db):
@@ -115,5 +117,5 @@ def test_submit_result_bad_payload(db):
     )
     tx.sign(priv)
     
-    with pytest.raises(ValueError, match="Invalid ComputeResult"):
+    with pytest.raises(ValueError, match="SUBMIT_RESULT disabled"):
         state.apply_transaction(tx)

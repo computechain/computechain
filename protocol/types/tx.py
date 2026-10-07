@@ -3,11 +3,14 @@ from typing import Optional, Dict, Any
 import json
 from ..crypto.hash import sha256, sha256_hex
 from .common import TxType
+from ..config.params import CURRENT_NETWORK
 from ..crypto.keys import sign as crypto_sign
 
 # Note: TxType is imported from common to share with other modules
 
 class Transaction(BaseModel):
+    version: int = 2
+    chain_id: str = CURRENT_NETWORK.chain_id
     tx_type: TxType
     from_address: str
     to_address: Optional[str] = None # Can be None for STAKE
@@ -23,29 +26,15 @@ class Transaction(BaseModel):
     gas_limit: int = 0
 
     def hash(self) -> str:
-        # Handle optional fields safely for hashing
-        to_addr = self.to_address if self.to_address else ""
+        # This is intentionally incompatible with the ambiguous v1 signature.
+        # The legacy application format is distinct from Comet's transfer wire format.
+        data = self.model_dump(mode="json", exclude={"signature"})
+        raw = json.dumps(data, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=True, allow_nan=False).encode("utf-8")
+        return sha256_hex(b"ComputeChain/legacy-tx/v2\0" + raw)
 
-        payload_json = json.dumps(
-            self.payload,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-        )
-
-        payload_str = (
-            self.tx_type.value
-            + self.from_address
-            + to_addr
-            + str(self.amount)
-            + str(self.fee)
-            + str(self.nonce)
-            + str(self.gas_price)
-            + str(self.gas_limit)
-            + payload_json
-            + self.pub_key  # Include pub_key in hash
-        )
-        return sha256_hex(payload_str.encode("utf-8"))
+    def signing_bytes(self) -> bytes:
+        return bytes.fromhex(self.hash())
 
     @property
     def hash_hex(self) -> str:
