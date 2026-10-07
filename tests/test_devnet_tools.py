@@ -120,3 +120,15 @@ def test_reports_never_contain_private_wallets(generator):
     report = (generator.net.root / "load-latest.json").read_text()
     assert "private_key" not in report
     assert all(wallet["private_key"] not in report for wallet in generator.wallets)
+
+
+def test_docs_control_forwards_only_public_configuration(root, monkeypatch):
+    from types import SimpleNamespace
+    from computechain.scripts import devnet
+    calls = []
+    monkeypatch.setattr(devnet.subprocess, "run", lambda args, **kwargs: calls.append(args))
+    devnet.documentation(Network(root), SimpleNamespace(monitoring_host="192.168.0.100", docs_port=8009), "up")
+    command = calls[0]
+    assert "docs/stack.py" in command[1] and "up" in command
+    assert command[-4:] == ["--host", "192.168.0.100", "--port", "8009"]
+    assert not any("password" in item.lower() or "private.hex" in item for item in command)

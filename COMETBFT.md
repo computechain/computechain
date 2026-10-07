@@ -244,11 +244,43 @@ trust period, связанный с unbonding, и политика обновл�
 - Большие states/истории, задержки/потери, hostile peer matrix, длительный soak test.
 - Производительная state structure/Merkle proofs: текущий полный JSON commitment
   и deep-copy рассчитаны на первый devnet, не на большое production state.
-- Обновить explorer/wallet/API: старый FastAPI backend и legacy CLI не являются
-  клиентами нового ABCI ledger.
+- Реализовать wallet/compute API: legacy CLI не является клиентом ABCI.
+  Read-only explorer уже подключён к native Comet v3; независимых proofs пока нет.
 
 Полный suite проходит без legacy import bridge. Исправлены устаревшие вызовы,
 единицы и funded fixtures без ослабления security checks.
+
+## Сайт, docs и explorer на этом стенде
+
+Обычный `start_test.sh up` теперь включает локальные интерфейсы:
+
+- Website EN/RU: http://192.168.0.100:8080/.
+- Docs EN/RU: http://192.168.0.100:8008/ и `/ru/`.
+- Explorer: http://192.168.0.100:4000/.
+
+Команды `docs-up`, `website-up`, `explorer-up` и варианты `-down`, `-status`,
+`-logs` управляют отдельными интерфейсами, без рестарта blockchain/monitoring.
+`docs-up` пересобирает MkDocs, `website-up` обновляет статические assets,
+`explorer-up` собирает Docker images. `cleanup.sh` останавливает все компоненты,
+сохраняя chain/signing data, SQLite index и docs releases. Флаги `--no-docs`,
+`--no-web` пропускают их запуск. UI-порты: `--docs-port`, `--website-port`,
+`--explorer-port`. LAN-адрес берётся из monitoring config или `--monitoring-host`.
+
+Explorer — readonly observer, не wallet или independent light client. Его
+`backend/comet.py` читает allowlisted native RPC, индексирует canonical block IDs
+и SHA256 raw TX bytes в собственной SQLite, сохраняет историю атомарно.
+Queries показывают liquid/stake/unbonding, validators, реальные execution codes;
+token amounts/nonces/power передаются integer strings. AppHash after H берётся из
+header H+1. Indexed height и account-state height различимы; ошибки/lag не скрыты.
+Legacy FastAPI/Postgres handlers не подключаются к этой версии.
+
+В LAN доступны только GET/HEAD gateways Nginx; explorer backend/frontend остаются
+loopback на base+200/base+201. В website разрешён только `/api/stats` observer;
+нет native RPC proxy или broadcast. Контейнерам не передаются keys/node storage/
+Docker socket. Runtime configs/assets/index — `<devnet>/website`, `/explorer`,
+`/docs-site`, вне Git. LAN origins используют HTTP; три публичных домена принимают
+HTTPS через существующий edge Nginx. Это публичный обзор локального devnet,
+не production blockchain. Конфигурация/продление: `PUBLIC_SITES.md`.
 
 ## Security pass — 7 октября 2026
 

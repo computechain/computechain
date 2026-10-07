@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew ComputeChain HTTPS certificate without unrelated hooks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/certbot renew --quiet --config-dir /etc/letsencrypt-computechain --work-dir /var/lib/letsencrypt-computechain --logs-dir /var/log/letsencrypt-computechain --no-directory-hooks --deploy-hook "nginx -t && systemctl reload nginx"

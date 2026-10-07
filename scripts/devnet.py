@@ -13,6 +13,7 @@ sys.path.insert(0, str(REPO.parent))
 from computechain.scripts.comet_devnet import Network, initialize, read, height, wait_for, rpc, operator_lock
 from contextlib import nullcontext
 from computechain.scripts.comet_load import MODES
+from computechain.scripts.web_services import control as web_control
 
 
 def ports(root, args):
@@ -49,6 +50,18 @@ def monitoring(net, args, command):
                     "--prometheus-port", str(prometheus), "--grafana-port", str(grafana), *options], check=True)
     if command == "down":
         net.stop("exporter")
+
+
+def documentation(net, args, command):
+    script = REPO.parent / "docs/stack.py"
+    if not script.is_file():
+        raise RuntimeError("clone computechain/docs beside this repository, or use --no-docs")
+    options = []
+    if args.monitoring_host:
+        options.extend(["--host", args.monitoring_host])
+    if args.docs_port is not None:
+        options.extend(["--port", str(args.docs_port)])
+    subprocess.run([sys.executable, str(script), command, "--dir", str(net.root), *options], check=True)
 
 
 def up(net):
@@ -114,17 +127,34 @@ def status(net, args):
     host = monitoring_host(net.root, args)
     print(f"Grafana http://{host}:{grafana}/d/computechain-v2 ; Prometheus http://{host}:{prometheus}")
     print(f"Data/logs: {net.root}; Grafana password: {net.root}/monitoring/monitoring.env (if configured)")
+    docs_settings = net.root / "docs-site/settings.json"
+    if docs_settings.exists():
+        config = read(docs_settings)
+        print(f"Docs configured: http://{config['host']}:{config['port']}/ ; RU: /ru/ (docs-status checks container)")
+    for name in ("website", "explorer"):
+        path = net.root / name / "settings.json"
+        if path.exists():
+            config = read(path)
+            print(f"{name} configured: http://{config['host']}:{config['port']}/ ({name}-status checks container)")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="?", default="up", choices=["up", "down", "status", "load", "load-stop",
         "low", "medium", "high", "monitoring-up", "monitoring-down", "monitoring-status",
-        "stake", "unstake", "delegate", "undelegate", "update-validator"])
+        "stake", "unstake", "delegate", "undelegate", "update-validator",
+        "docs-up", "docs-down", "docs-status", "docs-logs",
+        "website-up", "website-down", "website-status", "website-logs",
+        "explorer-up", "explorer-down", "explorer-status", "explorer-logs"])
     parser.add_argument("hours", nargs="?", type=float, help="legacy convenience: low 24 => 24-hour load")
     parser.add_argument("--dir", type=Path, default=REPO.parent / ".runtime/comet-staking-devnet")
     parser.add_argument("--base-port", type=int, default=28600, help="only for first initialization")
     parser.add_argument("--no-monitoring", action="store_true")
+    parser.add_argument("--no-docs", action="store_true")
+    parser.add_argument("--docs-port", type=int)
+    parser.add_argument("--no-web", action="store_true", help="skip website and explorer startup")
+    parser.add_argument("--website-port", type=int)
+    parser.add_argument("--explorer-port", type=int)
     parser.add_argument("--prometheus-port", type=int)
     parser.add_argument("--grafana-port", type=int)
     parser.add_argument("--monitoring-host", help="LAN IPv4 for Grafana/Prometheus; ABCI/RPC remain loopback")
@@ -137,6 +167,11 @@ def main():
     parser.add_argument("--validator-node", type=int, choices=range(6), default=4)
     parser.add_argument("--commission-bps", type=int, default=1000)
     args = parser.parse_args()
+    if args.docs_port is not None and not 1024 <= args.docs_port <= 65535:
+        parser.error("docs port must be 1024..65535")
+    for value in (args.website_port, args.explorer_port):
+        if value is not None and not 1024 <= value <= 65535:
+            parser.error("web ports must be 1024..65535")
     if args.tps is not None and not 0 < args.tps <= 500:
         parser.error("TPS must be positive and <=500")
     if args.hours is not None and not 0 < args.hours <= 168:
@@ -161,6 +196,11 @@ def execute(root, args, parser):
         if not args.no_monitoring:
             print("Starting isolated monitoring project...", flush=True)
             monitoring(net, args, "up")
+        if not args.no_docs:
+            documentation(net, args, "up")
+        if not args.no_web:
+            web_control(net.root, "explorer", "up", args.monitoring_host, args.explorer_port)
+            web_control(net.root, "website", "up", args.monitoring_host, args.website_port)
         if args.command in MODES:
             args.mode = args.command
             load(net, args)
@@ -174,8 +214,13 @@ def execute(root, args, parser):
     net = Network(root)
     if args.command == "down":
         net.stop("load", timeout=40)
+        for name in ("website", "explorer"):
+            if (root / name / "settings.json").exists():
+                web_control(root, name, "down")
         if not args.no_monitoring and (root / "monitoring/monitoring.env").exists():
             monitoring(net, args, "down")
+        if (root / "docs-site/settings.json").exists():
+            documentation(net, args, "down")
         net.down()
         print("Stopped this devnet. All keys, chain state, logs and monitoring volumes preserved.")
     elif args.command == "load":
@@ -187,6 +232,12 @@ def execute(root, args, parser):
         print(json.dumps(net.staking(args.command.upper().replace("-", "_"), args.validator_node, args.amount, args.commission_bps)))
     elif args.command.startswith("monitoring-"):
         monitoring(net, args, {"monitoring-up": "up", "monitoring-down": "down", "monitoring-status": "status"}[args.command])
+    elif args.command.startswith("docs-"):
+        documentation(net, args, args.command.removeprefix("docs-"))
+    elif args.command.startswith(("website-", "explorer-")):
+        name, command = args.command.split("-", 1)
+        web_control(root, name, command, args.monitoring_host,
+            args.website_port if name == "website" else args.explorer_port)
     else:
         status(net, args)
 
