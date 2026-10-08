@@ -275,3 +275,44 @@ def test_snapshot_multichunk_reordering_duplicates_and_bad_index(app, tmp_path, 
     finally:
         follower._clear_restore()
         target.close()
+
+
+def test_snapshot_commit_io_failure_keeps_durable_state_and_can_retry(app,tmp_path):
+    snap,chunks=snapshot_from(app)
+    target=Store(tmp_path / "io-recovery",CHAIN)
+    follower=Application(target)
+    try:
+        assert follower.OfferSnapshot(pb.RequestOfferSnapshot(snapshot=snap,app_hash=state_hash(app.store.state)),None).result==pb.ResponseOfferSnapshot.ACCEPT
+        target.conn.execute("CREATE TRIGGER disk_full BEFORE INSERT ON committed BEGIN SELECT RAISE(ABORT,'injected disk full'); END")
+        with pytest.raises(sqlite3.IntegrityError,match="disk full"):
+            for i,chunk in enumerate(chunks):
+                follower.ApplySnapshotChunk(pb.RequestApplySnapshotChunk(index=i,chunk=chunk),None)
+        assert target.state is None
+        assert target.conn.execute("SELECT COUNT(*) FROM committed").fetchone()[0]==0
+        assert follower.Info(pb.RequestInfo(),None).last_block_height==0
+        target.conn.execute("DROP TRIGGER disk_full")
+        last=len(chunks)-1
+        result=follower.ApplySnapshotChunk(pb.RequestApplySnapshotChunk(index=last,chunk=chunks[last]),None)
+        assert result.result==pb.ResponseApplySnapshotChunk.ACCEPT
+        assert target.state==app.store.state and follower.restore is None
+    finally:
+        follower._clear_restore()
+        target.close()
+
+
+def test_restore_never_clears_unknown_staging_database(app,tmp_path):
+    snap,chunks=snapshot_from(app)
+    target=Store(tmp_path / 'unknown-staging',CHAIN)
+    path=target.directory / 'restore-staging.sqlite'
+    with sqlite3.connect(path) as db:
+        db.execute('CREATE TABLE user_data(value TEXT)')
+        db.execute("INSERT INTO user_data VALUES('preserve')")
+    before=path.read_bytes()
+    follower=Application(target)
+    try:
+        with pytest.raises(ValueError,match='unrecognized'):
+            follower.OfferSnapshot(pb.RequestOfferSnapshot(snapshot=snap,app_hash=state_hash(app.store.state)),None)
+        assert path.read_bytes()==before
+        assert target.state is None and follower.restore is None
+    finally:
+        target.close()

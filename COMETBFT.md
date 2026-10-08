@@ -225,17 +225,71 @@ snapshot<=16 MiB, последние 10 snapshot heights. В тестовом с
 создаётся каждые 5 блоков. Данные chunks поступают в отдельную staging SQLite БД;
 durable application state меняется только после полного decode/schema/supply
 checks и совпадения с AppHash, проверенным light client.
+Staging использует один помеченный SQLite-файл: SIGKILL не создаёт новые
+16-MiB каталоги на каждой попытке. После restart старые chunks не считаются
+доверенными; требуется новый OfferSnapshot с проверенным AppHash. Чужая staging
+БД не очищается. Ошибка записи не публикует частично восстановленное состояние.
 
 Checksum snapshot помогает обнаружить повреждение, но корень доверия — checkpoint
-и проверка native headers/commits. Для local test checkpoint выбирает контроллер
-из собственных нод; это не механизм доверенного bootstrap публичной сети.
+и проверка native headers/commits. На стенде checkpoint экспортируется явно
+из собственных контролируемых нод и передаётся отдельным файлом; state sync
+больше не выбирает/обновляет его автоматически. Это не механизм доверенного
+bootstrap публичной сети: сам файл нужно получать по доверенному каналу.
 В production нужны явно распространённый checkpoint, independent RPC witnesses,
 trust period, связанный с unbonding, и политика обновления после долгого offline.
 В v3 trust period — 30s, ниже минимального 60s unbonding. Evidence window —
 20 блоков/30s; native evidence истекает только после ОБОИХ сроков. Долгий offline
 требует свежего проверенного checkpoint, а не увеличения trust period.
 
+Для нового follower `node5`, из core repository:
+
+```bash
+./start_test.sh checkpoint --checkpoint ../.runtime/comet-staking-devnet/checkpoint-01.json --witnesses 0 1 2
+./start_test.sh state-sync --node 5 --checkpoint ../.runtime/comet-staking-devnet/checkpoint-01.json --witnesses 0 1 2
+```
+
+Файл содержит chain ID, SHA256 genesis, native block ID/height/time и фиксированный
+trust period. Export не перезаписывает существующий файл. Preflight требует двух
+различных доступных node IDs с совпадающими genesis и anchor; offline witness
+можно заменить другим из указанного списка. Противоречие любого отвечающего
+witness останавливает bootstrap, а не игнорируется. Остаток trust window должен
+быть >=10s перед startup. Просроченный файл заменяется новым доверенным anchor
+под новым именем, не увеличением trust period.
+
+State-sync команда допускает только свежий non-genesis follower, без application/
+native DB и signed history. Для существующей цепи — обычный restart/catch-up;
+неудачный partial bootstrap требует отдельной инспекции, никогда автоматического
+reset. Проверка успеха включает лог текущего native restore и общий block/AppHash
+на доступной после snapshot высоте. Отчёт: `<devnet>/state-sync-nodeN.json`.
+Все CLI mutations разделяют operator lock. RPC/ABCI остаются loopback.
+
+Regressions включают настоящий SIGKILL приложения до/после Commit и посреди
+многокускового snapshot: повторный replay не удваивает перевод/fee/nonce,
+неполная загрузка не становится durable state. Многонодовый verify также проверяет
+catch-up через validator-set transition и state sync при отказе одного witness.
+
 ## Что ещё предстоит
+
+Код подготовки multi-host стенда уже есть: `scripts/multisite.py` и `MULTISITE.md`.
+Публичные registrations → общий genesis → per-node bundles без экспорта private keys;
+roles/physical machines/locations, restricted native JSON-RPC adapter и явный bootstrap.
+Локальный `verify_multisite.py` проверяет native full/state sync через read-only gateway.
+Отдельный multisite devnet уже работает на192.168.0.100/.1.205/.2.3: full sync,
+перевод, рестарты валидаторов и остановка без кворума проверены. Ключи/данные —
+~/computechain-node, scoped systemd/ACL, ограниченные CPU/RAM. Старый стенд/UI не
+менялся. Межлокационный P2P переведён на белые IP, pc205 исключён пользователем
+из PBR для нужных TCP-портов. Native mesh всех6nodes/общие block+AppHash/перевод/
+рестарты проверены; keys/genesis/history сохранены. Ускоренный authenticated
+state sync теперь проверен реальным full-a3 через два remote TLS источника по WAN:
+snapshot restored, все7block/AppHash/балансы/nonce совпали, обычный рестарт после
+expiry30s без нового checkpoint прошёл. Native RPC не публикуем; TLS readers
+27626/27636 имеют только read allowlist и source ACL. Физические отказы WAN,
+длительный soak ещё предстоят. Grafana уже адаптирована к7-nodeWANfleet через
+отдельный read-only observer и pinned TLS providers, native metrics/ABCI остаются
+локальными. TPS/supply считаются по одной реплике; alerts пока без внешнего канала.
+Website/explorer переведены на full-a1 новой цепочки с pinned genesis/node ID,
+отдельным index и сохранением oldhistory. Один syncedfullnode даёт observedstate
+всей своей цепочки, не независимое доказательство. Детали в MULTISITE.md.
 
 - Определить/внедрить rewards; legacy денежные handlers не подключены к ABCI.
 - Длительные отказные прогоны с меняющимся stake и multi-host topology.

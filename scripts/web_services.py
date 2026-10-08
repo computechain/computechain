@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -113,22 +114,85 @@ def save(path, value):
     os.replace(name,path)
 
 
+def observer_source(root):
+    """Persistent public source selection, separate from the old stand lifecycle."""
+    directory=root/'explorer'
+    path=directory/'observer.json'
+    if not path.exists():
+        network=read(root/'network.json')
+        return {'chain_id':network['chain_id'],'rpc_url':f"http://127.0.0.1:{network['base_port']+1}",
+                'index_dir':'index','genesis_file':'source-genesis.json','node_id':'','genesis_sha256':''}
+    value=read(path)
+    if set(value)!={'format','chain_id','rpc_url','node_id','genesis_sha256','index_dir','genesis_file'} or type(value['format']) is not int or value['format']!=1:
+        raise ValueError('invalid saved observer selection')
+    if not re.fullmatch(r'[a-z][a-z0-9-]{1,39}',value['chain_id']) or not re.fullmatch(r'[0-9a-f]{40}',value['node_id']) or not re.fullmatch(r'[0-9a-f]{64}',value['genesis_sha256']):
+        raise ValueError('invalid observer chain/node/genesis identity')
+    if not re.fullmatch(r'http://127\.0\.0\.1:[0-9]{4,5}',value['rpc_url']) or not 1024<=int(value['rpc_url'].rsplit(':',1)[1])<=65535:
+        raise ValueError('observer native RPC must stay literal loopback')
+    expected_index='indexes/'+value['chain_id']+'/'+value['genesis_sha256']
+    expected_genesis='sources/'+value['genesis_sha256']+'/genesis.json'
+    if value['index_dir']!=expected_index or value['genesis_file']!=expected_genesis:
+        raise ValueError('observer paths must be isolated by chain/genesis')
+    genesis=directory/value['genesis_file']
+    if any(p.is_symlink() for p in (path,genesis,*genesis.parents)) or hashlib.sha256(genesis.read_bytes()).hexdigest()!=value['genesis_sha256']:
+        raise ValueError('public observer genesis pin changed')
+    return value
+
+
+def select_observer(root,home):
+    from computechain.scripts import multisite
+    from computechain.scripts import rpc_read_gateway as reads
+    home=Path(home).resolve()
+    m=multisite.checked_home(home)
+    if m['node']['role']!='full':
+        raise ValueError('select an approved full node, never mount a validator home')
+    upstream=f"http://127.0.0.1:{m['ports']['rpc']}"
+    status=reads.read_native(upstream,'status',{})['result']
+    if status['node_info']['id']!=m['registration']['node_id'] or status['node_info']['network']!=m['chain_id'] or status['sync_info']['catching_up'] or int(status['sync_info']['earliest_block_height'])!=1:
+        raise ValueError('observer requires matching caught-up full history from genesis')
+    value={'format':1,'chain_id':m['chain_id'],'rpc_url':upstream,'node_id':m['registration']['node_id'],
+           'genesis_sha256':m['genesis_sha256'],
+           'index_dir':'indexes/'+m['chain_id']+'/'+m['genesis_sha256'],
+           'genesis_file':'sources/'+m['genesis_sha256']+'/genesis.json'}
+    raw=(home/'config/genesis.json').read_bytes()
+    if hashlib.sha256(raw).hexdigest()!=value['genesis_sha256']:
+        raise ValueError('approved genesis bytes changed')
+    directory=root/'explorer'
+    directory.mkdir(mode=0o700,exist_ok=True)
+    target=directory/value['genesis_file']
+    target.parent.mkdir(parents=True,exist_ok=True)
+    if target.exists():
+        if target.is_symlink() or target.read_bytes()!=raw:
+            raise ValueError('existing public genesis copy differs; no overwrite')
+    else:
+        with target.open('xb') as stream: stream.write(raw)
+        target.chmod(0o644)
+    # Only source selection/public genesis change. No database/key copy/reset.
+    save(directory/'observer.json',value)
+    return observer_source(root)
+
+
 def compose(root, name, config, *command):
     directory = root / name
-    network = read(root / "network.json")
+    source = observer_source(root)
     env = {**os.environ, "WEB_HOST": config["host"], "WEB_PORT": str(config["port"]),
-        "WEB_CONFIG": str(directory / "nginx.conf"), "WEB_SITE": str(directory / "site"), "WEB_INDEX": str(directory / "index"),
+        "WEB_CONFIG": str(directory / "nginx.conf"), "WEB_SITE": str(directory / "site"), "WEB_INDEX": str(root/'explorer'/source['index_dir']),
         "EXPLORER_API_PORT": str(config["api_port"]), "EXPLORER_FRONTEND_PORT": str(config["frontend_port"]),
-        "CPC_CHAIN_ID": network["chain_id"], "CPC_RPC_URL": "http://127.0.0.1:"+str(network["base_port"]+1)}
+        "CPC_CHAIN_ID": source['chain_id'], "CPC_RPC_URL":source['rpc_url'],
+        'CPC_EXPECTED_NODE_ID':source['node_id'],'CPC_GENESIS_SHA256':source['genesis_sha256'],
+        'WEB_GENESIS':str(root/'explorer'/source['genesis_file']),
+        'CPC_GENESIS_FILE':'/config/genesis.json' if source['genesis_sha256'] else ''}
     project = "cpc-"+name+"-"+hashlib.sha256(str(root).encode()).hexdigest()[:10]
     file = WORKSPACE / name / "docker-compose.yml"
     subprocess.run(["docker","compose","--project-name",project,"--file",str(file),*command],env=env,check=True)
 
 
-def control(root, name, command, host=None, public_port=None, trusted_proxy=None):
+def control(root, name, command, host=None, public_port=None, trusted_proxy=None, observer_home=None):
     root = Path(root).resolve()
     if name not in ("website","explorer") or command not in ("up","down","status","logs"):
         raise ValueError("unsupported web service operation")
+    if observer_home is not None and (name!='explorer' or command!='up'):
+        raise ValueError('observer selection is explicit explorer up only')
     directory = root / name
     if command != "up" and not (directory / "settings.json").exists():
         print(name+" not configured; no containers changed")
@@ -138,6 +202,8 @@ def control(root, name, command, host=None, public_port=None, trusted_proxy=None
         if not (root / "network.json").is_file():
             raise ValueError("start the v3 stand first")
         directory.mkdir(mode=0o700, exist_ok=True)
+        if observer_home is not None:
+            select_observer(root,observer_home)
         if name == "website":
             explorer = settings(root,"explorer")
             config["api_port"] = explorer["api_port"]
@@ -152,10 +218,15 @@ def control(root, name, command, host=None, public_port=None, trusted_proxy=None
                 "explorer": explorer["port"], "grafana": int(env.get("GRAFANA_PORT",3000))}
             (site / "services.js").write_text("window.COMPUTECHAIN_SERVICES="+json.dumps(links)+";\n")
         else:
-            index = directory / "index"
+            source=observer_source(root)
+            index = directory / source['index_dir']
+            if any(p.is_symlink() for p in (index,*index.parents)):
+                raise ValueError('observer index path must not be a symlink')
             if not index.exists():
-                index.mkdir(mode=0o700)
+                index.mkdir(mode=0o700,parents=True)
                 os.chown(index,1000,1000)  # only the newly created public explorer index
+            if not source['genesis_sha256'] and not (directory/source['genesis_file']).exists():
+                (directory/source['genesis_file']).write_text('{}\n')  # unused legacy placeholder, never keys
         (directory / "nginx.conf").write_text(nginx(config,name))
         save(directory / "settings.json",config)
         compose(root,name,config,"up","-d",*( ["--build"] if name == "explorer" else []),"--wait","--wait-timeout","90")
@@ -176,13 +247,14 @@ def main():
     parser.add_argument("--host")
     parser.add_argument("--port",type=int)
     parser.add_argument("--trusted-proxy",help="private edge peer allowed to forward HTTPS scheme")
+    parser.add_argument('--observer-home',type=Path,help='explorer up only: approved caught-up full node; preserve old index and pin a new source')
     args=parser.parse_args()
     # Same operator lock as the parent launcher; direct usage also serialized.
     import sys
     sys.path.insert(0,str(WORKSPACE))
     from computechain.scripts.comet_devnet import operator_lock
     with operator_lock(args.dir):
-        control(args.dir,args.service,args.command,args.host,args.port,args.trusted_proxy)
+        control(args.dir,args.service,args.command,args.host,args.port,args.trusted_proxy,args.observer_home)
 
 
 if __name__ == "__main__":

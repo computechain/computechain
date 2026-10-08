@@ -8,9 +8,9 @@ import ipaddress
 import json
 import logging
 import math
+import os
 from pathlib import Path
 import sqlite3
-import tempfile
 
 import grpc
 
@@ -23,6 +23,7 @@ from .staking import initial_state, begin_block, finish_block
 
 log = logging.getLogger(__name__)
 MAX_BLOCK_TXS = 500
+RESTORE_DB_ID = 0x43504352  # CPCR; distinguishes our staging from an unrelated DB
 
 
 def timestamp(value):
@@ -250,16 +251,30 @@ class Application(rpc.ABCIServicer):
                     or len(snap.hash) != 32 or len(request.app_hash) != 32 or snap.hash != request.app_hash):
                 return pb.ResponseOfferSnapshot(result=pb.ResponseOfferSnapshot.REJECT)
             self._clear_restore()
-            directory = tempfile.TemporaryDirectory(prefix=".restore-", dir=self.store.directory)
-            staging = sqlite3.connect(Path(directory.name) / "chunks.sqlite", check_same_thread=False)
-            staging.execute("CREATE TABLE chunks(id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
-            self.restore = {"directory": directory, "db": staging, "snapshot": pb.Snapshot.FromString(snap.SerializeToString()), "app_hash": bytes(request.app_hash)}
+            # A single reusable staging file bounds disk use across SIGKILL/retries.
+            # Persisted chunks are never trusted/resumed without a NEW verified offer.
+            path = self.store.directory / "restore-staging.sqlite"
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            empty = os.fstat(descriptor).st_size == 0
+            os.close(descriptor)
+            staging = sqlite3.connect(path, check_same_thread=False)
+            try:
+                marker = staging.execute("PRAGMA application_id").fetchone()[0]
+                if not empty and marker != RESTORE_DB_ID:
+                    raise ValueError("unrecognized restore staging database")
+                staging.execute(f"PRAGMA application_id={RESTORE_DB_ID}")
+                staging.execute("CREATE TABLE IF NOT EXISTS chunks(id INTEGER PRIMARY KEY, data BLOB NOT NULL)")
+                with staging:
+                    staging.execute("DELETE FROM chunks")
+            except Exception:
+                staging.close()
+                raise
+            self.restore = {"db": staging, "snapshot": pb.Snapshot.FromString(snap.SerializeToString()), "app_hash": bytes(request.app_hash)}
             return pb.ResponseOfferSnapshot(result=pb.ResponseOfferSnapshot.ACCEPT)
 
     def _clear_restore(self):
         if self.restore:
             self.restore["db"].close()
-            self.restore["directory"].cleanup()
             self.restore = None
 
     def ApplySnapshotChunk(self, request, context):

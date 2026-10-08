@@ -1,0 +1,8 @@
+# Minimal host-local runtime; no compiler, pytest or grpcio-tools on remote nodes.
+ecdsa==0.19.2
+bech32==1.2.0
+grpcio==1.82.2
+protobuf==7.36.2
+six==1.17.0
+typing-extensions==4.16.0
+tomli==2.3.0; python_version < '3.11'

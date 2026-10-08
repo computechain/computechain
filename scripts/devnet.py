@@ -142,7 +142,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="?", default="up", choices=["up", "down", "status", "load", "load-stop",
         "low", "medium", "high", "monitoring-up", "monitoring-down", "monitoring-status",
-        "stake", "unstake", "delegate", "undelegate", "update-validator",
+        "stake", "unstake", "delegate", "undelegate", "update-validator", "checkpoint", "state-sync",
         "docs-up", "docs-down", "docs-status", "docs-logs",
         "website-up", "website-down", "website-status", "website-logs",
         "explorer-up", "explorer-down", "explorer-status", "explorer-logs"])
@@ -166,6 +166,9 @@ def main():
     parser.add_argument("--amount", type=int, default=10**15)
     parser.add_argument("--validator-node", type=int, choices=range(6), default=4)
     parser.add_argument("--commission-bps", type=int, default=1000)
+    parser.add_argument("--checkpoint",type=Path,help="explicit trusted checkpoint file; export never overwrites")
+    parser.add_argument("--witnesses",type=int,nargs="+",default=[0,1],help="controlled local witness node indexes")
+    parser.add_argument("--node",type=int,choices=[4,5],default=5,help="fresh state-sync follower")
     args = parser.parse_args()
     if args.docs_port is not None and not 1024 <= args.docs_port <= 65535:
         parser.error("docs port must be 1024..65535")
@@ -230,6 +233,11 @@ def execute(root, args, parser):
         print("Load stopped; nodes/monitoring are still running.")
     elif args.command in ("stake", "unstake", "delegate", "undelegate", "update-validator"):
         print(json.dumps(net.staking(args.command.upper().replace("-", "_"), args.validator_node, args.amount, args.commission_bps)))
+    elif args.command in ("checkpoint","state-sync"):
+        if args.checkpoint is None:
+            parser.error("--checkpoint is required; choose/approve the trust anchor explicitly")
+        result=net.checkpoint(args.checkpoint,args.witnesses) if args.command=="checkpoint" else net.state_sync(args.node,args.checkpoint,args.witnesses)
+        print(json.dumps(result))
     elif args.command.startswith("monitoring-"):
         monitoring(net, args, {"monitoring-up": "up", "monitoring-down": "down", "monitoring-status": "status"}[args.command])
     elif args.command.startswith("docs-"):

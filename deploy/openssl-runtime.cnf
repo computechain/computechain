@@ -1,0 +1,12 @@
+# Per-process compatibility only for early Ubuntu 22.04 OpenSSL 3 RIPEMD160.
+# Never install this as the host-wide OpenSSL configuration.
+openssl_conf = cpc_init
+[cpc_init]
+providers = cpc_providers
+[cpc_providers]
+default = cpc_default
+legacy = cpc_legacy
+[cpc_default]
+activate = 1
+[cpc_legacy]
+activate = 1

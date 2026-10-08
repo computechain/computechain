@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import fcntl
 import base64
 import hashlib
@@ -27,6 +27,7 @@ from computechain.blockchain.comet.transaction import canonical, sign_transfer, 
 from computechain.blockchain.comet.economics import VERSION, UNIT, EVIDENCE_BLOCKS, EVIDENCE_SECONDS
 from computechain.protocol.crypto.addresses import address_from_pubkey
 from computechain.protocol.crypto.keys import generate_private_key, public_key_from_private
+from computechain.scripts import comet_checkpoint as anchors
 
 CHAIN_ID = "cpc-comet-staking-devnet-1"
 COUNT = 6  # four validators, full-sync follower, state-sync follower
@@ -115,7 +116,26 @@ def set_toml(path, section, changes):
         body, count = re.subn(rf"(?m)^{re.escape(key)}\s*=.*$", lambda _: replacement, body)
         if not count:
             body += replacement + "\n"
-    Path(path).write_text(text[:match.start(2)] + body + text[match.end(2):])
+    atomic_text(path,text[:match.start(2)] + body + text[match.end(2):])
+
+
+def atomic_text(path,text):
+    path=Path(path)
+    original=path.stat()
+    mode=original.st_mode & 0o777
+    with tempfile.NamedTemporaryFile(mode="w",dir=path.parent,prefix=".config-",delete=False) as stream:
+        name=Path(stream.name)
+        try:
+            stream.write(text)
+            stream.flush()
+            created=os.fstat(stream.fileno())
+            if (created.st_uid,created.st_gid)!=(original.st_uid,original.st_gid):
+                os.fchown(stream.fileno(),original.st_uid,original.st_gid)
+            os.fchmod(stream.fileno(),mode)
+            os.fsync(stream.fileno())
+            os.replace(name,path)
+        finally:
+            name.unlink(missing_ok=True)
 
 
 def initialize(root, binary, base):
@@ -329,20 +349,72 @@ class Network:
                 raw = sign_transaction(private, self.config["chain_id"], kind, amount, nonce, payload=payload)
             return self.submit(raw, amount)
 
-    def state_sync(self, i):
-        checkpoint = max(1, height(self.config, 0) - 3)
-        digest = rpc(self.config, 0, "block", height=checkpoint)["block_id"]["hash"]
-        config = Path(self.config["nodes"][i]) / "config/config.toml"
-        set_toml(config, "statesync", {"enable": "true", "rpc_servers": json.dumps(",".join(f"http://127.0.0.1:{self.config['base_port'] + j * 10 + 1}" for j in (0, 1))),
-                  "trust_height": str(checkpoint), "trust_hash": json.dumps(digest), "trust_period": '"30s"', "discovery_time": '"5s"',
+    def checkpoint(self, path, witnesses=(0, 1)):
+        value = anchors.capture(self.config, lambda i, method, **p: rpc(self.config, i, method, **p), witnesses)
+        anchors.export(path, value)
+        return value
+
+    def state_sync(self, i, checkpoint, witnesses=(0, 1)):
+        if type(i) is not int or not 4 <= i < COUNT:
+            raise ValueError("state sync is only for a fresh non-genesis follower (node4/5)")
+        witnesses = anchors.witnesses(self.config, witnesses)
+        if i in witnesses:
+            raise ValueError("restoring node cannot be its own witness")
+        registry = read(self.registry_path)
+        if any(name in registry and self.owned(registry[name]) for name in (f"app{i}", f"engine{i}")):
+            raise ValueError("state sync target is running; existing processes preserved")
+        node = Path(self.config["nodes"][i])
+        if node.resolve() != (self.root / f"node{i}").resolve() or node.is_symlink():
+            raise ValueError("state sync target must belong to this stand")
+        if any(path.is_symlink() for path in (node / "config",node / "data",node / "application")):
+            raise ValueError("state sync target directories must not be symlinks")
+        if any((node / name).is_symlink() for name in ("config/config.toml","config/genesis.json",
+                "config/priv_validator_key.json","config/node_key.json","data/priv_validator_state.json")):
+            raise ValueError("state sync target config/signing files must not be symlinks")
+        if hashlib.sha256((node / "config/genesis.json").read_bytes()).hexdigest() != self.config["genesis_sha256"]:
+            raise ValueError("target genesis differs from the trusted network identity")
+        # Do not open/write an existing application or native engine database.
+        if any(path.exists() or path.is_symlink() for path in (node / "application/application.sqlite", node / "data/state.db", node / "data/blockstore.db")):
+            raise ValueError("state sync requires a fresh follower; use ordinary restart/catch-up for existing history")
+        signer = read(node / "data/priv_validator_state.json")
+        if int(signer["height"]) != 0:
+            raise ValueError("state sync target has signed history; no reset")
+        value = anchors.load(checkpoint)
+        verified = anchors.check_witnesses(value, self.config, lambda j, method, **p: rpc(self.config, j, method, **p), witnesses)
+        config = node / "config/config.toml"
+        previous_config = config.read_text()
+        log = self.root / f"engine{i}.log"
+        log_offset = log.stat().st_size if log.exists() else 0
+        try:
+            set_toml(config, "statesync", {"enable": "true", "rpc_servers": json.dumps(",".join(f"http://127.0.0.1:{self.config['base_port'] + j * 10 + 1}" for j in verified["witnesses"])),
+                  "trust_height": str(value["height"]), "trust_hash": json.dumps(value["block_hash"]), "trust_period": json.dumps(str(anchors.TRUST_SECONDS)+"s"), "discovery_time": '"5s"',
                   "chunk_request_timeout": '"5s"', "chunk_fetchers": "2", "max_snapshot_chunks": "64"})
-        self.start_node(i)
-        target = height(self.config, 0)
-        wait_for("verified state sync", lambda: height(self.config, i) >= target, 90)
-        # Actual restore log is mandatory; do not pass if it silently used full block sync.
-        def restored():
-            return "Snapshot restored" in (self.root / f"engine{i}.log").read_text(errors="replace")
-        return {"trusted_height": checkpoint, "trusted_hash": digest, "target_height": target, "snapshot_restored": restored()}
+            set_toml(config, "", {"log_level": '"info"'})
+            target = int(rpc(self.config,verified["witnesses"][0],"status",timeout=2)["sync_info"]["latest_block_height"])
+            if anchors.validate(value,self.config) < anchors.STARTUP_BUDGET_SECONDS:
+                raise ValueError("checkpoint near expiry before startup; obtain a fresh trusted anchor")
+            self.start_node(i)
+            wait_for("verified state sync", lambda: height(self.config, i) >= target, 90)
+            # Require this attempt's native restore, not a line from an older log.
+            with log.open("rb") as stream:
+                stream.seek(log_offset)
+                restored = b"Snapshot restored" in stream.read(8 * 1024 * 1024)
+            if not restored:
+                raise RuntimeError("native snapshot restore was not proven; no silent full-sync fallback")
+            def compare():
+                # Snapshot restore need not retain blocks before its base height.
+                at = int(rpc(self.config,i,"block")["block"]["header"]["height"])-1
+                return self.agree([i,*verified["witnesses"]],at) if at>=target else False
+            agreement = wait_for("state-sync commitment comparison",compare,30)
+            report = {"passed":True,"trusted_height": value["height"], "trusted_hash": value["block_hash"],
+                "target_height": target, "snapshot_restored": True, **verified, "agreement": agreement}
+            write(self.root / f"state-sync-node{i}.json",report)
+            return report
+        except Exception as exc:
+            self.stop_node(i)  # only this attempt's processes, preserve ALL durable data/keys
+            atomic_text(config,previous_config)
+            write(self.root / f"state-sync-node{i}.json",{"passed":False,"error":str(exc),"data_preserved":True})
+            raise
 
     def verify(self):
         report = {"chain_id": self.config["chain_id"], "genesis_sha256": self.config["genesis_sha256"], "scenarios": {}}
@@ -386,22 +458,33 @@ class Network:
             self.partition(None)
             wait_for("recovery after healing partition", lambda: min(height(self.config, i) for i in range(5)) >= max(after) + 3, 60)
             record("partition_healed", self.agree(list(range(5)), max(after) + 1))
+            self.stop_node(4)
             joined = self.staking("STAKE", 4, 6000*UNIT)
             activation = int(joined["height"])+2
-            wait_for("first dynamic validator activation", lambda: min(height(self.config, j) for j in range(5)) >= activation+1, 30)
+            wait_for("first dynamic validator activation while follower offline", lambda: min(height(self.config, j) for j in range(4)) >= activation+1, 30)
             key = self.config["consensus_keys"][4]
             if key in self.validator_powers(activation-1) or self.validator_powers(activation).get(key) != 6000:
                 raise RuntimeError("wrong native validator activation height/power")
             record("validator_4_joined_h_plus_two", {**joined, "activation_height": activation})
+            self.start_node(4)
+            wait_for("offline follower crosses validator transition",lambda: height(self.config,4)>=activation+1,60)
+            record("offline_follower_validator_transition",self.agree(list(range(5)),activation))
             record("pre_snapshot_delegation", self.staking("DELEGATE", 4, 100*UNIT))
             record("pre_snapshot_undelegation", self.staking("UNDELEGATE", 4, 100*UNIT))
             print("Starting fresh state-sync node with trusted checkpoint", flush=True)
             # Enable info logging only for the restoring node so we can prove the restore path.
-            set_toml(Path(self.config["nodes"][5]) / "config/config.toml", "", {"log_level": '"info"'})
-            restored = self.state_sync(5)
+            self.stop_node(1)
+            checkpoint = self.root / "trusted-checkpoint.json"
+            self.checkpoint(checkpoint,witnesses=(0,1,2))
+            restored = self.state_sync(5,checkpoint,witnesses=(0,1,2))
             if not restored["snapshot_restored"]:
                 raise RuntimeError("state sync did not restore a snapshot")
             record("verified_snapshot_state_sync", restored)
+            if restored["witnesses"] != [0,2] or [r["node"] for r in restored["unavailable"]] != [1]:
+                raise RuntimeError("unavailable witness was not safely replaced")
+            record("state_sync_witness_failover",{"witnesses":restored["witnesses"],"offline_witness":1})
+            self.start_node(1)
+            wait_for("witness rejoining",lambda: height(self.config,1)>=restored["target_height"]+1,60)
             if not self.state(5)["unbondings"] or len(self.state(5)["engine_powers"]) != 5:
                 raise RuntimeError("state sync did not restore stake/withdrawal liabilities")
             record("snapshot_restored_staking_liabilities", {"unbondings": len(self.state(5)["unbondings"]), "scheduled_validators": 5})
@@ -466,13 +549,16 @@ class Network:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["init", "up", "down", "status", "transfer", "verify", "stake", "unstake", "delegate", "undelegate", "update-validator"])
+    parser.add_argument("command", choices=["init", "up", "down", "status", "transfer", "verify", "stake", "unstake", "delegate", "undelegate", "update-validator", "checkpoint", "state-sync"])
     parser.add_argument("--dir", type=Path, default=WORKSPACE / ".runtime/comet-staking-devnet")
     parser.add_argument("--binary", type=Path, default=WORKSPACE / ".tools/bin/cometbft")
     parser.add_argument("--base-port", type=int, default=28600)
     parser.add_argument("--amount", type=int, default=10**18)
     parser.add_argument("--validator-node", type=int, choices=range(COUNT), default=4)
     parser.add_argument("--commission-bps", type=int, default=1000)
+    parser.add_argument("--checkpoint",type=Path,help="explicit trusted checkpoint file; never auto-refreshed")
+    parser.add_argument("--witnesses",type=int,nargs="+",default=[0,1],help="controlled local witness node indexes")
+    parser.add_argument("--node",type=int,choices=[4,5],default=5,help="fresh state-sync follower")
     args = parser.parse_args()
     root = args.dir.resolve()
     if args.command == "init":
@@ -481,6 +567,18 @@ def main():
     if args.command == "verify" and not root.exists():
         initialize(root, args.binary.resolve(), args.base_port)
     net = Network(root)
+    with nullcontext() if args.command == "status" else operator_lock(root):
+        execute(net,args,parser)
+
+
+def execute(net,args,parser):
+    root=net.root
+    if args.command in ("checkpoint","state-sync"):
+        if args.checkpoint is None:
+            parser.error("--checkpoint is required; choose/approve the trust anchor explicitly")
+        result = net.checkpoint(args.checkpoint,args.witnesses) if args.command == "checkpoint" else net.state_sync(args.node,args.checkpoint,args.witnesses)
+        print(json.dumps(result))
+        return
     if args.command == "up":
         if any(net.owned(entry) for entry in read(net.registry_path).values()):
             raise RuntimeError("devnet already running; existing processes preserved")

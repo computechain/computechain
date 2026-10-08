@@ -52,3 +52,55 @@ def test_only_configured_edge_can_forward_https(tmp_path):
     assert web.settings(tmp_path,"explorer")==config
     with pytest.raises(ValueError):
         web.settings(tmp_path,"explorer",trusted_proxy="0.0.0.0")
+
+
+@pytest.fixture
+def pinned_observer(tmp_path,monkeypatch):
+    import hashlib
+    from computechain.scripts import multisite as fleet, rpc_read_gateway as reads
+    (tmp_path/'network.json').write_text(json.dumps({'base_port':28600,'chain_id':'old-chain'}))
+    old=tmp_path/'explorer/index'; old.mkdir(parents=True)
+    (old/'index.sqlite').write_bytes(b'preserve-old-history')
+    home=tmp_path/'full-node'; (home/'config').mkdir(parents=True)
+    raw=json.dumps({'chain_id':'new-chain','app_state':{'schema':3}}).encode()
+    (home/'config/genesis.json').write_bytes(raw)
+    manifest={'chain_id':'new-chain','node':{'role':'full'},'genesis_sha256':hashlib.sha256(raw).hexdigest(),
+              'registration':{'node_id':'a'*40},'ports':{'rpc':27641}}
+    status={'node_info':{'id':'a'*40,'network':'new-chain'},
+            'sync_info':{'catching_up':False,'earliest_block_height':'1'}}
+    monkeypatch.setattr(fleet,'checked_home',lambda _:manifest)
+    monkeypatch.setattr(reads,'read_native',lambda *args:{'result':status})
+    return tmp_path,home,status
+
+
+def test_observer_switch_preserves_old_index_and_persists_new_source(pinned_observer):
+    root,home,_=pinned_observer
+    source=web.select_observer(root,home)
+    assert source['chain_id']=='new-chain' and source['rpc_url']=='http://127.0.0.1:27641'
+    assert source['index_dir'].startswith('indexes/new-chain/')
+    assert (root/'explorer/index/index.sqlite').read_bytes()==b'preserve-old-history'
+    assert web.observer_source(root)==source
+    assert web.observer_source(root)['chain_id']!='old-chain'
+
+
+@pytest.mark.parametrize('fault',['id','chain','catching-up','pruned'])
+def test_bad_full_source_fails_before_changing_selection(pinned_observer,fault):
+    root,home,status=pinned_observer
+    if fault=='id': status['node_info']['id']='b'*40
+    if fault=='chain': status['node_info']['network']='wrong'
+    if fault=='catching-up': status['sync_info']['catching_up']=True
+    if fault=='pruned': status['sync_info']['earliest_block_height']='100'
+    with pytest.raises(ValueError): web.select_observer(root,home)
+    assert not (root/'explorer/observer.json').exists()
+    assert (root/'explorer/index/index.sqlite').read_bytes()==b'preserve-old-history'
+
+
+def test_tampered_saved_source_never_falls_back_to_legacy(pinned_observer):
+    root,home,_=pinned_observer
+    source=web.select_observer(root,home)
+    path=root/'explorer/observer.json'
+    path.write_text(json.dumps({**source,'rpc_url':'http://8.8.8.8:27641'}))
+    with pytest.raises(ValueError): web.observer_source(root)
+    path.write_text(json.dumps(source))
+    (root/'explorer'/source['genesis_file']).write_text('{}')
+    with pytest.raises(ValueError): web.observer_source(root)
